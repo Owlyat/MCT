@@ -1,151 +1,306 @@
 mod modrinth_request;
-use modrinth_request::{MCMod, ModrinthSortingFilter};
-use std::io::stdin;
-mod modname;
+mod papermc_request;
 use clap::{Arg, Command};
+use modrinth_request::{ModrinthEntry, ModrinthSortingFilter};
+use papermc_request::PaperMCBuild;
 use reqwest::Error;
-use serde_json::Value;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let commands = Command::new("Modrinth CLI")
+    let commands = Command::new("MCT [MINECRAFT TOOL]")
         .version("1.0")
         .author("Owlyat")
-        .about("Manages mods")
+        .about("Minecraft Tool")
         .subcommand(
-            Command::new("search_mod")
-                .short_flag('s')
-                .alias("sm")
-                .about("Search for a mod")
+            Command::new("search")
+                .short_flag('s').visible_short_flag_alias('s')
+                .alias("s")
+                .about("Search on modrinth")
                 .arg(
-                    Arg::new("mod_name")
-                        .short('n')
+                    Arg::new("Name")
+                        .long("name")
+                        .short('n').visible_short_alias('n')
                         .aliases(["name", "n"])
                         .visible_aliases(["name", "n"])
-                        .long("modname")
-                        .help("Search term for mod")
+                        .help("Search term")
                         .required(true),
                 )
                 .arg(
-                    Arg::new("mod_version")
-                        .long("mod_version")
-                        .alias("mv")
-                        .visible_alias("mv")
-                        .required(false)
-                        .help("Filter results by a specific mod version"),
-                )
-                .arg(
-                    Arg::new("with_loader")
-                        .long("with_loader")
-                        .alias("wl")
-                        .visible_alias("wl")
-                        .required(false)
-                        .help("Filter results by loader"),
-                )
-                .arg(
-                    Arg::new("mods_number")
-                        .long("mods_number")
-                        .aliases(["mn", "max"])
-                        .visible_aliases(["mn", "max"])
-                        .help("Specifies the max number of mods to be displayed")
-                        .value_parser(clap::value_parser!(usize))
+                    Arg::new("Project_Version")
+                        .short('v')
+                        .long("project_version")
+                        .alias("pv")
+                        .visible_alias("pv")
+                        .help("Filter results by a specific game version")
                         .required(false),
                 )
                 .arg(
-                    Arg::new("offset")
+                    Arg::new("With_Loader")
+                        .long("with_loader")
+                        .alias("wl")
+                        .visible_alias("wl")
+                        .help("Filter results by loader\nex : fabric | neoforge | quilt | forge | ...")
+                        .required(false),
+                )
+                .arg(Arg::new("Project_Type").long("project_type").short('t').alias("pt").help("The type of project you seek for, default value : mod\nex: mod | modpack | resourcepack | ...").required(false))
+                .arg(
+                    Arg::new("Result_Number")
+                        .long("result_number")
+                        .short('l').visible_short_alias('l')
+                        .aliases(["mn", "max", "limit"])
+                        .visible_aliases(["mn", "max"])
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Specifies the max number of mods to be displayed")
+                        .required(false),
+                )
+                .arg(
+                    Arg::new("Offset")
                         .long("offset")
+                        .short('o').visible_short_alias('o')
                         .alias("off")
                         .visible_alias("off")
-                        .short('o')
+                        .value_parser(clap::value_parser!(usize))
                         .help("Number of mods that will be skipped in the search")
-                        .required(false)
-                        .value_parser(clap::value_parser!(usize)),
+                        .required(false),
                 )
                 .arg(
                     Arg::new("Sorting")
-                        .long("Sorting")
-                        .short('f')
+                        .long("sorting")
+                        .short('f').visible_short_alias('f')
                         .aliases(["filter", "sort"])
                         .visible_aliases(["filter", "sort"])
                         .help("Sort results by relevance|downloads|follows|newest|updated")
                         .required(false),
-                ),
-        )
-        .subcommand(
-            Command::new("download_mod")
-                .short_flag('d')
-                .alias("dm")
-                .about("Download a mod by ID")
-                .arg(
-                    Arg::new("mod_id")
-                        .aliases(["id", "modid", "mod_id", "ID", "Id", "ModId"])
-                        .long("download_mod")
-                        .help("Mod ID to download")
-                        .required_unless_present("mod_name"),
                 )
                 .arg(
-                    Arg::new("mod_name")
-                        .alias("mn")
-                        .short('n')
-                        .long("mod_name")
-                        .help("Mod Name to download")
-                        .required_unless_present("mod_id"),
-                )
-                .arg(
-                    Arg::new("mod_version")
-                        .alias("mv")
-                        .help("Mod Version to download")
+                    Arg::new("Client_Side")
+                        .short('C').visible_short_alias('C')
+                        .long("client_side")
+                        .alias("client")
+                        .visible_alias("client")
+                        .value_parser(clap::value_parser!(bool))
+                        .help("Filters Client side mods required")
                         .required(false),
                 )
                 .arg(
-                    Arg::new("download_path")
-                        .long("download_path")
-                        .alias("p")
-                        .visible_alias("p")
-                        .required(false)
-                        .help("Download mod to path given (not required)"),
+                    Arg::new("Server_Side")
+                        .long("server_side")
+                        .short('S').visible_short_alias('S')
+                        .alias("server")
+                        .visible_alias("server")
+                        .value_parser(clap::value_parser!(bool))
+                        .help("Filters Server side mods required")
+                        .required(false),
                 ),
         )
+        .subcommand(
+            Command::new("Download_Entry")
+                .long_flag("download_entry")
+                .short_flag('d').visible_short_flag_alias('d')
+                .alias("dw")
+                .about("Download an entry on modrinth")
+                .arg(
+                    Arg::new("Id")
+                        .long("entry_id")
+                        .short('i').visible_short_alias('i')
+                        .aliases(["id","Id","iD","ID"])
+                        .help("Entry ID to download")
+                        .required_unless_present("name"),
+                )
+                .arg(
+                    Arg::new("Name")
+                        .long("name")
+                        .short('n').visible_short_alias('n')
+                        .help("Entry Name to download")
+                        .required_unless_present("Id"),
+                )
+                .arg(
+                    Arg::new("Version")
+                        .long("version")
+                        .short('v').visible_short_alias('v')
+                        .alias("ev")
+                        .help("Entry Version to download")
+                        .required(false),
+                )
+                .arg(
+                    Arg::new("Download_Path")
+                        .long("download_path")
+                        .short('p').visible_short_alias('p')
+                        .help("Download entry to path given (not required)")
+                        .required(false),
+                )
+                .arg(
+                    Arg::new("With_Dependencies")
+                        .long("with_dependencies")
+                        .short('d').visible_short_alias('d')
+                        .aliases(["with_dep", "wd"])
+                        .visible_aliases(["with_dep", "wd"])
+                        .value_parser(clap::value_parser!(bool))
+                        .help("Downloads dependencies for the entry if found")
+                        .required(false),
+                )
+                .arg(
+                    Arg::new("For_Loader")
+                        .long("for_loader")
+                        .short('l')
+                        .alias("fl")
+                        .visible_alias("fl")
+                        .help("Download entry for specified loader"),
+                ),
+        ).subcommand(Command::new("Create_Server")
+            .short_flag('c')
+            .about("Create a directory with a Minecraft server")
+            .arg(
+                Arg::new("Path")
+                    .long("Path")
+                    .short('p')
+                    .help("Server path Directory")
+                    .required(false))
+            .arg(
+                Arg::new("Platform")
+                    .long("Platform")
+                    .short('c')
+                    .help("ex : Paper")
+                    .required(false))
+            .arg(
+                Arg::new("Gui")
+                    .long("Gui")
+                    .short('g')
+                    .value_parser(clap::value_parser!(bool))
+                    .help("Shows the server graphic user interface ex : true | false")
+                    .required(false))
+            .arg(
+                Arg::new("Max_Ram")
+                    .long("max_ram")
+                    .alias("Xmx")
+                    .visible_alias("Xmx")
+                    .help("Max Amount of ram ex: 1024k | 512m | 8g")
+                    .required(false))
+            .arg(
+                Arg::new("Min_Ram")
+                    .long("min_ram")
+                    .alias("Xms")
+                    .visible_alias("Xms")
+                    .help("Initial amount of ram ex: 1024k | 512m | 8g")
+                    .required(false))
+            .arg(
+                Arg::new("Game_Version")
+                    .long("game_version")
+                    .short('v')
+                    .help("Minecraft version ex: 1.20.1")
+                    .required(true))
+            .arg(
+                Arg::new("Build")
+                    .long("build")
+                    .short('B')
+                    .help("Build number ex: 23")
+                    .required(false))
+            .arg(
+                Arg::new("Public_IP")
+                    .long("public_ip")
+                    .short('I')
+                    .aliases(["pip","broadcastip","p_ip","bcast"])
+                    .visible_aliases(["pip","broadcastip","p_ip","bcast"])
+                    .value_parser(clap::value_parser!(bool))
+                    .help("Broadcast your server with a network tunnel using a service depending on the online services (Serveo, Bore.pub, Tunnelto, Ownserver,...) ex : True | False")
+                    .required(false)))
         .get_matches();
 
     match commands.subcommand() {
-        Some(("search_mod", sub_commands)) => {
-            let mod_name = sub_commands.get_one::<String>("mod_name").unwrap();
-            let version = sub_commands.get_one::<String>("mod_version");
-            let loader = sub_commands.get_one::<String>("with_loader");
-            let max_mods_number = sub_commands.get_one::<usize>("mods_number");
-            let offset = sub_commands.get_one::<usize>("offset");
+        Some(("search", sub_commands)) => {
+            let mod_name = sub_commands.get_one::<String>("Name").unwrap();
+            let version = sub_commands.get_one::<String>("Project_Version");
+            let loader = sub_commands.get_one::<String>("With_Loader");
+            let max_mods_number = sub_commands.get_one::<usize>("Result_Number");
+            let offset = sub_commands.get_one::<usize>("Offset");
             let sorting = sub_commands.get_one::<String>("Sorting");
+            let is_cliend_side = sub_commands.get_one::<bool>("Client_Side");
+            let is_server_side = sub_commands.get_one::<bool>("Server_Side");
+            let project_type = sub_commands.get_one::<String>("Project_Type");
 
-            let mut modrinth_mod = MCMod::builder();
+            let mut modrinth_mod = ModrinthEntry::builder();
             modrinth_mod
-                .search_modrinth_mod(
+                .search_modrinth(
                     mod_name,
                     version,
                     loader,
                     max_mods_number.cloned(),
+                    project_type.cloned(),
                     ModrinthSortingFilter::with(sorting),
                     offset.cloned(),
+                    is_cliend_side.cloned(),
+                    is_server_side.cloned(),
                 )
                 .await;
 
-            modrinth_mod.display_mods();
+            modrinth_mod.display_entries();
         }
         Some(("download_mod", sub_commands)) => {
             let mod_id = sub_commands.get_one::<String>("mod_id");
             let version = sub_commands.get_one::<String>("mod_version");
             let mod_name = sub_commands.get_one::<String>("mod_name");
             let download_path = sub_commands.get_one::<String>("download_path");
+            let do_download_dependencies = sub_commands.get_one::<bool>("with_dependencies");
+            let for_loader = sub_commands.get_one::<String>("for_loader");
 
-            let mut modrinth_req = MCMod::builder();
+            let mut modrinth_req = ModrinthEntry::builder();
             modrinth_req
                 .download_mod(
                     &mut mod_id.cloned(),
                     mod_name.cloned(),
+                    for_loader.cloned(),
                     version.cloned(),
-                    verify_download_path(download_path.cloned()),
+                    verify_path(download_path.cloned()),
+                    do_download_dependencies.cloned(),
                 )
                 .await;
+        }
+        Some(("Create_Server", sub_commands)) => {
+            let path = sub_commands.get_one::<String>("Path");
+            let path = check_server_path(path.cloned()).unwrap();
+            let game_version = sub_commands.get_one::<String>("Game_Version");
+            let game_version_unwrapped = game_version.unwrap().to_owned();
+            let build = sub_commands.get_one::<String>("Build");
+            let platform = sub_commands.get_one::<String>("Platform");
+            let xmx = sub_commands.get_one::<String>("Max_Ram");
+            let xms = sub_commands.get_one::<String>("Min_Ram");
+            let is_gui = sub_commands.get_one::<bool>("Gui");
+            let do_open_public_ip = sub_commands.get_one::<bool>("Public_IP");
+
+            if platform.is_some() && platform.clone().unwrap().to_lowercase() == "paper"
+                || platform.is_none()
+            {
+                let mut paperbuild = PaperMCBuild::build();
+                match paperbuild.check_data(path.clone()) {
+                    Ok(_) => {
+                        if do_open_public_ip.is_some() {
+                            if do_open_public_ip.unwrap().clone() {
+                                std::process::Command::new("cmd")
+                                    .args(["/C", "ssh", "-R", "0:localhost:25565", "serveo.net"])
+                                    .spawn()
+                                    .unwrap();
+                            }
+                        }
+                        paperbuild.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
+                    }
+                    Err(_) => {
+                        paperbuild
+                            .check_build(game_version_unwrapped.clone(), build.cloned())
+                            .await;
+                        paperbuild.download_build(path).await;
+                        if do_open_public_ip.is_some() {
+                            if do_open_public_ip.unwrap().clone() {
+                                std::process::Command::new("cmd")
+                                    .args(["/C", "ssh", "-R", "0:localhost:25565", "serveo.net"])
+                                    .spawn()
+                                    .unwrap();
+                            }
+                        }
+
+                        paperbuild.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
+                    }
+                }
+            }
         }
         _ => (),
     }
@@ -153,100 +308,16 @@ async fn main() -> Result<(), Error> {
     Ok(())
 }
 
-fn get_items(json: &Value, value: &str) -> Option<Vec<Value>> {
-    if let Some(hits) = json.get("hits") {
-        if let Some(projects) = hits.as_array() {
-            let mut result = vec![];
-            projects
-                .iter()
-                .map(|project| {
-                    result.push(match project.get(value) {
-                        Some(v) => v.clone(),
-                        None => {
-                            panic!("No value {} in {:#?}", value, project)
-                        }
-                    })
-                })
-                .count();
-            return Some(result);
-        }
-    }
-    None
-}
-
-async fn download_mod(
-    mod_id: &str,
-    version: Option<&str>,
-    loader: Option<&str>,
-) -> Result<(), reqwest::Error> {
-    if loader.is_none() {
-        println!("no loader in the function call");
-    }
-    if version.is_none() {
-        println!("no version in the function call")
-    }
-    let url = format!("https://api.modrinth.com/v2/project/{}/version", mod_id);
-    println!("Fetching versions from: {}", url);
-
-    let response = reqwest::get(&url).await?;
-    let data = response.json::<Value>().await?;
-
-    if let Some(json) = data.as_array() {
-        let mut good_builds = vec![];
-        // find the corresponding build with the right version and loader
-        json.iter()
-            .filter(|object| {
-                if let Some(game_versions) = object["game_versions"].as_array() {
-                    if let Some(_loaders) = object["loaders"].as_array() {
-                        if version.is_some()
-                            && game_versions
-                                .contains(&serde_json::Value::String(version.unwrap().to_owned()))
-                        {
-                            if loader.is_some() {
-                                true
-                            } else {
-                                if loader.is_none() {
-                                    true
-                                } else {
-                                    false
-                                }
-                            }
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            })
-            .map(|v| {
-                good_builds.push(v);
-            })
-            .count();
-        if good_builds.len() > 1 {
-            good_builds.iter().for_each(|v| {
-                if let Some(files) = v["files"].as_array() {
-                    files.iter().for_each(|v| {
-                        if let Some(url) = v["url"].as_str() {
-                            println!("    => {}", url)
-                        }
-                    });
-                }
-            });
-        }
-    }
-    Ok(())
-}
-
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 /// Verifies if the given download path is valid.
 /// Returns `Some(&Path)` if the path exists and is a directory, otherwise `None`.
-fn verify_download_path(download_path: Option<String>) -> Option<PathBuf> {
-    if download_path.is_some() {
-        let dlpath = download_path.unwrap();
+fn verify_path(path: Option<String>) -> Option<PathBuf> {
+    if path.is_some() {
+        let dlpath = path.unwrap();
         let path = Path::new(&dlpath);
 
         // Check if the path exists and is a directory
@@ -254,12 +325,48 @@ fn verify_download_path(download_path: Option<String>) -> Option<PathBuf> {
             Some(path.to_path_buf())
         } else {
             println!(
-                "Invalid download path: '{}'. Path does not exist or is not a directory.",
+                "Invalid path: '{}'. Path does not exist or is not a directory.",
                 dlpath
             );
             None
         }
     } else {
         None
+    }
+}
+
+// Check if the provided path is valid, else try to create a default path else returns an error
+fn check_server_path(path: Option<String>) -> Result<PathBuf, std::io::Error> {
+    if path.clone().is_some() {
+        if Path::new(&path.clone().unwrap()).exists() {
+            // Path already exists
+            println!("Server directory Found");
+            Ok(Path::new(&path.unwrap()).to_path_buf())
+        } else {
+            // Created Dir
+            match fs::create_dir(Path::new(&path.clone().unwrap())) {
+                Ok(_) => {
+                    println!("Server directory created Successfully");
+                    Ok(Path::new(&path.unwrap()).to_path_buf())
+                }
+                Err(e) => Err(e),
+            }
+        }
+    } else {
+        // No path provided try default path if it does not work return error
+        let default_path = "./MCT Server";
+
+        if Path::new(default_path).exists() {
+            println!("Default Server directory Found");
+            Ok(Path::new(default_path).to_path_buf())
+        } else {
+            match fs::create_dir(default_path) {
+                Ok(_) => {
+                    println!("Default Server directory created Successfully");
+                    Ok(Path::new(default_path).to_path_buf())
+                }
+                Err(e) => Err(e),
+            }
+        }
     }
 }

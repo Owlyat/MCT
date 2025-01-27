@@ -53,15 +53,16 @@ use serde_json::json;
 use serde_json::Value;
 
 #[derive(Serialize, Debug, Clone)]
-pub struct MCMod {
+pub struct ModrinthEntry {
     mod_name: Option<Box<str>>,
     mod_id: Option<Box<str>>,
     mod_version: Option<Box<str>>,
-    mod_loader: Option<Box<str>>,
+    mod_loader: Option<String>,
     response: Option<Value>,
+    dependencies: Option<Value>,
 }
 
-impl MCMod {
+impl ModrinthEntry {
     pub fn builder() -> Self {
         Self {
             ..Default::default()
@@ -69,14 +70,17 @@ impl MCMod {
     }
 
     /// Use this if you want to search a modrinth mod
-    pub async fn search_modrinth_mod(
+    pub async fn search_modrinth(
         &mut self,
         mod_name: impl Into<String>,
         mod_version: Option<impl Into<String>>,
         mod_loader: Option<impl Into<String>>,
         max_mod_number: Option<usize>,
+        project_type: Option<String>,
         sorting: Option<ModrinthSortingFilter>,
         offset: Option<usize>,
+        is_client_side: Option<bool>,
+        is_server_side: Option<bool>,
     ) -> &mut Self {
         // this is just to call the function with Some("word")
         let target_mod_name: String = mod_name.into();
@@ -85,6 +89,14 @@ impl MCMod {
         let query = format!("?query={}", target_mod_name);
 
         let mut facets: Vec<Value> = Vec::new();
+        match project_type {
+            Some(proj_type) => {
+                facets.push(json!([format!("project_type:{}", proj_type)]));
+            }
+            None => {
+                facets.push(json!([String::from("project_type:mod")]));
+            }
+        }
 
         // if any is empty, we don't push it to facets
         if mod_version.is_some() {
@@ -124,16 +136,44 @@ impl MCMod {
             if offset.is_some() { offset.unwrap() } else { 0 }
         );
 
+        // Filter client side mod required
+        if is_client_side.is_some() {
+            facets.push(json!([format!(
+                "client_side:{}",
+                if is_client_side.unwrap() {
+                    "required"
+                } else {
+                    "optional"
+                }
+            )]));
+        }
+
+        // Filter server side mod required
+        if is_server_side.is_some() {
+            facets.push(json!([format!(
+                "server_side:{}",
+                if is_client_side.unwrap() {
+                    "required"
+                } else {
+                    "optional"
+                }
+            )]));
+        }
+
         // Building the URL to the API END POINT
-        let url = format!(
-            "{}{}{}{}{}{}",
-            SEARCH_API_END_POINT,
-            query,
-            json!(facets),
-            limit,
-            sorting,
-            offset,
-        );
+        let url = {
+            format!(
+                "{}{}&facets={}{}{}{}",
+                SEARCH_API_END_POINT,
+                query,
+                json!(facets),
+                limit,
+                sorting,
+                offset,
+            )
+        };
+
+        println!("{}", url);
 
         let response = reqwest::get(&url).await;
 
@@ -152,7 +192,7 @@ impl MCMod {
     }
 }
 
-impl Default for MCMod {
+impl Default for ModrinthEntry {
     fn default() -> Self {
         Self {
             mod_name: None,
@@ -160,29 +200,30 @@ impl Default for MCMod {
             mod_version: None,
             mod_loader: None,
             response: None,
+            dependencies: None,
         }
     }
 }
 
-impl MCMod {
-    pub fn display_mods(&self) {
+impl ModrinthEntry {
+    pub fn display_entries(&self) {
         if let Some(response) = &self.response {
             if let Some(mods) = response.get("hits").and_then(|hits| hits.as_array()) {
                 println!("Found {} mods:", mods.len());
                 for (index, mod_entry) in mods.iter().enumerate() {
-                    let mod_name = mod_entry
+                    let name = mod_entry
                         .get("title")
                         .and_then(|v| v.as_str())
                         .unwrap_or("Unknown");
-                    let mod_id = mod_entry
+                    let id = mod_entry
                         .get("project_id")
                         .and_then(|v| v.as_str())
                         .unwrap_or("Unknown");
-                    let mod_version = mod_entry
-                        .get("latest_version")
+                    let project_type = mod_entry
+                        .get("project_type")
                         .and_then(|v| v.as_str())
                         .unwrap_or("Unknown");
-                    let mod_desc = mod_entry
+                    let desc = mod_entry
                         .get("description")
                         .and_then(|v| v.as_str())
                         .unwrap_or("No description");
@@ -199,32 +240,36 @@ impl MCMod {
                         .unwrap_or_else(|| "Unknown".to_string());
 
                     println!(
-                        "\n{}. Mod Name: {}\n   ID: {}\n   Latest Version: {}\n   Game Versions: {}\n   Description: {}",
-                        index + 1, mod_name, mod_id, mod_version, game_versions, mod_desc
+                        "\n{}. Name: {}\n   ID: {}\n   Type: {}\n   Game Versions: {}\n   Description: {}",
+                        index + 1, name, id, project_type, game_versions, desc.replace('\n',"" )
                     );
                 }
             } else {
-                println!("No mods found in the response!");
+                println!("Nothing found in the response!");
             }
         } else {
-            println!("No response to display mods from!");
+            println!("No response to display from!");
         }
     }
 }
 
-impl MCMod {
+impl ModrinthEntry {
     pub async fn download_mod(
         &mut self,
         mod_id: &mut Option<String>,
         mod_name: Option<String>,
+        mod_loader: Option<String>,
         version: Option<String>,
         download_path: Option<PathBuf>,
+        dependencies: Option<bool>,
     ) {
         let mut mod_id_or_name = mod_id
             .clone()
             .or_else(|| mod_name.clone())
             .expect("Either mod_id or mod_name must be provided");
 
+        // If the first request fails, retry it once.
+        let mut counter = 0;
         loop {
             // Construct the API endpoint
             let url = if mod_id.is_some() {
@@ -233,10 +278,12 @@ impl MCMod {
                     mod_id_or_name
                 )
             } else {
-                format!(
-                    "https://api.modrinth.com/v2/search?query=\"{}\"&facets=[[\"project_type:mod\"]]",
-                    mod_id_or_name
-                )
+                match (mod_loader.is_some(), version.is_some()) {
+                    (true, true) => format!("{}?query=\"{}\"&facets=[[\"project_type:mod\"],[\"categories:{}\"],[\"versions:{}\"]]",SEARCH_API_END_POINT,mod_id_or_name,mod_loader.clone().unwrap(),version.clone().unwrap()),
+                    (true, false) => format!("{}?query=\"{}\"&facets=[[\"project_type:mod\"],[\"categories:{}\"]]",SEARCH_API_END_POINT,mod_id_or_name,mod_loader.clone().unwrap()),
+                    (false, true) => format!("{}?query=\"{}\"&facets=[[\"project_type:mod\"],[\"versions:{}\"]]",SEARCH_API_END_POINT,mod_id_or_name,version.clone().unwrap()),
+                    (false, false) => format!("{}?query=\"{}\"&facets=[[\"project_type:mod\"]]",SEARCH_API_END_POINT,mod_id_or_name),
+                }
             };
 
             println!("Fetching mod information from: {}", url);
@@ -246,20 +293,30 @@ impl MCMod {
             match response {
                 Ok(res) => {
                     let data: Value = match res.json().await {
-                        Ok(json) => json,
+                        Ok(json) => {
+                            if mod_loader.is_some() && self.mod_loader.is_none() {
+                                self.mod_loader = mod_loader.clone();
+                            }
+                            json
+                        }
                         Err(e) => {
                             println!("Failed to parse JSON response: {}", e);
+                            if counter == 0 {
+                                counter += 1;
+                                continue;
+                            }
                             return;
                         }
                     };
 
-                    if mod_id.is_none() {
+                    if self.mod_id.is_none() {
                         // If searching by name and multiple results are found
                         if let Some(mods) = data["hits"].as_array() {
                             if mods.len() > 1 {
                                 println!("Multiple mods found. Please select one:");
                                 for (index, mod_entry) in mods.iter().enumerate() {
                                     let name = mod_entry["title"].as_str().unwrap_or("Unknown Mod");
+                                    // Sets the ModrinthEntry Name to a value so we can download dependencies later
                                     let author =
                                         mod_entry["author"].as_str().unwrap_or("Unknown Author");
                                     println!("{}: {} by {}", index + 1, name, author);
@@ -280,13 +337,15 @@ impl MCMod {
                                         .as_str()
                                         .expect("Mod ID not found")
                                         .to_string();
+
+                                    self.mod_id = Some(mod_id_or_name.clone().into());
                                     *mod_id = Some(mod_id_or_name.clone());
                                     continue; // Restart the loop with the selected mod ID
                                 }
                             }
                         }
                     }
-
+                    // Mod ID Selected
                     if let Some(files) = self.extract_files(&data, version.clone()).await {
                         for file in files {
                             let download_url = file.get("url").and_then(|u| u.as_str());
@@ -316,10 +375,22 @@ impl MCMod {
 
                                         // Save the file
                                         match std::fs::write(&full_path, content) {
-                                            Ok(_) => println!(
-                                                "Downloaded: {}",
-                                                full_path.to_string_lossy()
-                                            ),
+                                            Ok(_) => {
+                                                println!(
+                                                    "Downloaded: {}",
+                                                    full_path.to_string_lossy()
+                                                );
+                                                if dependencies.is_some() {
+                                                    let do_download_dependencies =
+                                                        dependencies.unwrap();
+                                                    if do_download_dependencies {
+                                                        self.verify_dependencies(
+                                                            download_path.clone(),
+                                                        )
+                                                        .await;
+                                                    }
+                                                }
+                                            }
                                             Err(e) => println!(
                                                 "Failed to save file to {}: {}",
                                                 full_path.to_string_lossy(),
@@ -338,17 +409,31 @@ impl MCMod {
                 }
                 Err(e) => {
                     println!("Failed to fetch mod information: {}", e);
+                    if counter == 0 {
+                        counter += 1;
+                        continue;
+                    }
                     return;
                 }
             }
         }
     }
 
-    async fn extract_files(&self, data: &Value, version: Option<String>) -> Option<Vec<Value>> {
-        if let Some(versions) = data.as_array() {
-            for version_data in versions {
+    /// Check if the version (if provided) matches the data and returns the json for file[] which has the download url
+    async fn extract_files(&mut self, data: &Value, version: Option<String>) -> Option<Vec<Value>> {
+        if let Some(projects) = data.as_array() {
+            for project in projects {
+                let loaders = project["loaders"].as_array().unwrap();
+                if self.mod_loader.is_some() {
+                    if !loaders
+                        .iter()
+                        .any(|l| l.as_str() == Some(self.mod_loader.clone().unwrap().as_str()))
+                    {
+                        continue;
+                    }
+                }
                 if let Some(version_str) = &version {
-                    let game_versions = version_data["game_versions"].as_array()?;
+                    let game_versions = project["game_versions"].as_array().unwrap();
                     if !game_versions
                         .iter()
                         .any(|v| v.as_str() == Some(version_str))
@@ -356,11 +441,58 @@ impl MCMod {
                         continue;
                     }
                 }
-                if let Some(files) = version_data["files"].as_array() {
+                if let Some(files) = project["dependencies"].as_array() {
+                    self.dependencies = Some(json!(files));
+                }
+                if let Some(files) = project["files"].as_array() {
                     return Some(files.clone());
                 }
             }
         }
         None
+    }
+}
+
+impl ModrinthEntry {
+    async fn verify_dependencies(&mut self, download_path: Option<PathBuf>) {
+        // If the request fails retry it once.
+        let mut project_ids: Vec<String> = vec![];
+        if self.dependencies.is_some() {
+            let dep = self.dependencies.clone().unwrap();
+            if let Some(dependencies) = dep.as_array() {
+                for dependency in dependencies {
+                    if let Some(required) = dependency["dependency_type"].as_str() {
+                        if required == "required" {
+                            if let Some(dep_proj_id) = dependency["project_id"].as_str() {
+                                project_ids.push(dep_proj_id.to_owned());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if project_ids.is_empty() {
+            return;
+        }
+        for project_id in project_ids {
+            let mod_loader_copy = self.mod_loader.clone();
+            let mod_loader_target = if let Some(mod_loader) = mod_loader_copy {
+                Some(format!("{}", mod_loader))
+            } else {
+                None
+            };
+
+            let target_id: &mut Option<String> = &mut Some(project_id.clone());
+            // Box the future to allow recursion
+            let boxed_future = Box::pin(self.download_mod(
+                target_id,
+                None,
+                mod_loader_target,
+                None,
+                download_path.clone(),
+                Some(true),
+            ));
+            boxed_future.await;
+        }
     }
 }
