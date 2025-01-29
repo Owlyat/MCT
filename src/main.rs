@@ -12,7 +12,7 @@ async fn main() -> Result<(), Error> {
         .author("Owlyat")
         .about("Minecraft Tool")
         .subcommand(
-            Command::new("search")
+            Command::new("Search")
                 .short_flag('s').visible_short_flag_alias('s')
                 .alias("s")
                 .about("Search on modrinth")
@@ -104,8 +104,7 @@ async fn main() -> Result<(), Error> {
                         .long("entry_id")
                         .short('i').visible_short_alias('i')
                         .aliases(["id","Id","iD","ID"])
-                        .help("Entry ID to download")
-                        .required_unless_present("name"),
+                        .help("Entry ID to download"),
                 )
                 .arg(
                     Arg::new("Name")
@@ -207,7 +206,7 @@ async fn main() -> Result<(), Error> {
         .get_matches();
 
     match commands.subcommand() {
-        Some(("search", sub_commands)) => {
+        Some(("Search", sub_commands)) => {
             let mod_name = sub_commands.get_one::<String>("Name").unwrap();
             let version = sub_commands.get_one::<String>("Project_Version");
             let loader = sub_commands.get_one::<String>("With_Loader");
@@ -235,19 +234,19 @@ async fn main() -> Result<(), Error> {
 
             modrinth_mod.display_entries();
         }
-        Some(("download_mod", sub_commands)) => {
-            let mod_id = sub_commands.get_one::<String>("mod_id");
-            let version = sub_commands.get_one::<String>("mod_version");
-            let mod_name = sub_commands.get_one::<String>("mod_name");
-            let download_path = sub_commands.get_one::<String>("download_path");
-            let do_download_dependencies = sub_commands.get_one::<bool>("with_dependencies");
-            let for_loader = sub_commands.get_one::<String>("for_loader");
+        Some(("Download_Entry", sub_commands)) => {
+            let id = sub_commands.get_one::<String>("Id");
+            let version = sub_commands.get_one::<String>("Version");
+            let name = sub_commands.get_one::<String>("Name");
+            let download_path = sub_commands.get_one::<String>("Download_Path");
+            let do_download_dependencies = sub_commands.get_one::<bool>("With_Dependencies");
+            let for_loader = sub_commands.get_one::<String>("For_Loader");
 
             let mut modrinth_req = ModrinthEntry::builder();
             modrinth_req
                 .download_mod(
-                    &mut mod_id.cloned(),
-                    mod_name.cloned(),
+                    &mut id.cloned(),
+                    name.cloned(),
                     for_loader.cloned(),
                     version.cloned(),
                     verify_path(download_path.cloned()),

@@ -190,6 +190,40 @@ impl PaperMCBuild {
             startup_script.push_str(&format!("-Xms{}", xms));
         }
 
+        match fs::write(
+            self.server_path
+                .clone()
+                .unwrap()
+                .to_string_lossy()
+                .replace(&self.download.clone().unwrap(), "eula.txt"),
+            "eula=true",
+        ) {
+            Ok(_) => {
+                println!("Eula are agreed !")
+            }
+            Err(_) => {
+                let value: String = self
+                    .server_path
+                    .clone()
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace(&self.download.clone().unwrap(), "eula.txt");
+                let eula_path = Path::new(&value);
+                if eula_path.is_file() {
+                    println!("Eula already generated !");
+                    match fs::read_to_string(eula_path) {
+                        Ok(v) => {
+                            let eula_str = v.replace("false", "true");
+                            fs::write(Path::new(&value), eula_str).unwrap();
+                        }
+                        Err(_) => {
+                            println!("Error reading eula file !")
+                        }
+                    }
+                }
+            }
+        }
+
         java_args.push(format!("-jar"));
         java_args.push(format!("{}", self.download.clone().unwrap()));
         startup_script.push_str(&format!("-jar {}", self.download.clone().unwrap()));
