@@ -1,6 +1,8 @@
+mod fabric_request;
 mod modrinth_request;
 mod papermc_request;
 use clap::{Arg, Command};
+use fabric_request::FabricMCClient;
 use modrinth_request::{ModrinthEntry, ModrinthSortingFilter};
 use papermc_request::PaperMCBuild;
 use reqwest::Error;
@@ -145,7 +147,11 @@ async fn main() -> Result<(), Error> {
                         .alias("fl")
                         .visible_alias("fl")
                         .help("Download entry for specified loader"),
-                ),
+                ).arg(Arg::new("For_Server")
+                    .long("for_server")
+                    .short('f').visible_short_alias('f')
+                    .help("Download mod for fabric server, provide server root directory to this ar&gument")
+                    .required(false)),
         ).subcommand(Command::new("Create_Server")
             .short_flag('c')
             .about("Create a directory with a Minecraft server")
@@ -235,6 +241,7 @@ async fn main() -> Result<(), Error> {
             modrinth_mod.display_entries();
         }
         Some(("Download_Entry", sub_commands)) => {
+            let for_server = sub_commands.get_one::<String>("For_Server");
             let id = sub_commands.get_one::<String>("Id");
             let version = sub_commands.get_one::<String>("Version");
             let name = sub_commands.get_one::<String>("Name");
@@ -242,17 +249,38 @@ async fn main() -> Result<(), Error> {
             let do_download_dependencies = sub_commands.get_one::<bool>("With_Dependencies");
             let for_loader = sub_commands.get_one::<String>("For_Loader");
 
-            let mut modrinth_req = ModrinthEntry::builder();
-            modrinth_req
-                .download_mod(
-                    &mut id.cloned(),
-                    name.cloned(),
-                    for_loader.cloned(),
-                    version.cloned(),
-                    verify_path(download_path.cloned()),
-                    do_download_dependencies.cloned(),
-                )
-                .await;
+            if for_server.is_some() {
+                let server_path = verify_path(for_server.cloned());
+                let mut fabric_client = FabricMCClient::build(server_path);
+                match fabric_client.check_data(None) {
+                    Ok(_) => {
+                        let mut modrinth_req = ModrinthEntry::builder();
+                        modrinth_req
+                            .download_server_mod(
+                                &mut id.cloned(),
+                                name.cloned(),
+                                Some("fabric".to_owned()),
+                                fabric_client.get_version(),
+                                fabric_client.get_download_path(),
+                                Some(true),
+                            )
+                            .await;
+                    }
+                    Err(_) => {}
+                }
+            } else {
+                let mut modrinth_req = ModrinthEntry::builder();
+                modrinth_req
+                    .download_mod(
+                        &mut id.cloned(),
+                        name.cloned(),
+                        for_loader.cloned(),
+                        version.cloned(),
+                        verify_path(download_path.cloned()),
+                        do_download_dependencies.cloned(),
+                    )
+                    .await;
+            }
         }
         Some(("Create_Server", sub_commands)) => {
             let path = sub_commands.get_one::<String>("Path");
@@ -299,6 +327,50 @@ async fn main() -> Result<(), Error> {
                         paperbuild.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
                     }
                 }
+            } else {
+                if platform.is_some() && platform.cloned().unwrap().to_lowercase() == "fabric" {
+                    let mut fabric_client = FabricMCClient::build(Some(path.clone()));
+                    match fabric_client.check_data(Some(path.clone())) {
+                        Ok(_) => {
+                            if do_open_public_ip.unwrap().clone() {
+                                std::process::Command::new("cmd")
+                                    .args(["/C", "ssh", "-R", "0:localhost:25565", "serveo.net"])
+                                    .spawn()
+                                    .unwrap();
+                            }
+
+                            fabric_client.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
+                        }
+                        Err(_) => {
+                            fabric_client
+                                .select_game_version(Some(game_version_unwrapped))
+                                .await;
+
+                            fabric_client.select_loader_version().await;
+                            fabric_client.fetch_latest_installer_version().await;
+
+                            fabric_client.generate_download_url();
+
+                            fabric_client.download_build(path).await;
+                            if do_open_public_ip.is_some() {
+                                if do_open_public_ip.unwrap().clone() {
+                                    std::process::Command::new("cmd")
+                                        .args([
+                                            "/C",
+                                            "ssh",
+                                            "-R",
+                                            "0:localhost:25565",
+                                            "serveo.net",
+                                        ])
+                                        .spawn()
+                                        .unwrap();
+                                }
+                            }
+
+                            fabric_client.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
+                        }
+                    }
+                }
             }
         }
         _ => (),
@@ -330,6 +402,7 @@ fn verify_path(path: Option<String>) -> Option<PathBuf> {
             None
         }
     } else {
+        println!("Path option is None !");
         None
     }
 }

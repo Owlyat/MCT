@@ -418,6 +418,173 @@ impl ModrinthEntry {
             }
         }
     }
+}
+
+impl ModrinthEntry {
+    pub async fn download_server_mod(
+        &mut self,
+        mod_id: &mut Option<String>,
+        mod_name: Option<String>,
+        mod_loader: Option<String>,
+        version: Option<String>,
+        download_path: Option<PathBuf>,
+        dependencies: Option<bool>,
+    ) {
+        let mut mod_id_or_name = mod_id
+            .clone()
+            .or_else(|| mod_name.clone())
+            .expect("Either mod_id or mod_name must be provided");
+
+        // If the first request fails, retry it once.
+        let mut counter = 0;
+        loop {
+            // Construct the API endpoint
+            let url = if mod_id.is_some() {
+                format!(
+                    "https://api.modrinth.com/v2/project/{}/version",
+                    mod_id_or_name
+                )
+            } else {
+                match (mod_loader.is_some(), version.is_some()) {
+                    (true, true) => format!("{}?query={}&facets=[[\"project_type:mod\"],[\"categories:{}\"],[\"versions:{}\"],[\"server_side:required\"]]",SEARCH_API_END_POINT,mod_id_or_name,mod_loader.clone().unwrap(),version.clone().unwrap()),
+                    (true, false) => format!("{}?query={}&facets=[[\"project_type:mod\"],[\"categories:{}\"],[\"server_side:required\"]]",SEARCH_API_END_POINT,mod_id_or_name,mod_loader.clone().unwrap()),
+                    (false, true) => format!("{}?query={}&facets=[[\"project_type:mod\"],[\"versions:{}\"],[\"server_side:required\"]]",SEARCH_API_END_POINT,mod_id_or_name,version.clone().unwrap()),
+                    (false, false) => format!("{}?query={}&facets=[[\"project_type:mod\"],[\"server_side:required\"]]",SEARCH_API_END_POINT,mod_id_or_name),
+                }
+            };
+
+            println!("Fetching mod information from: {}", url);
+
+            // Fetch the data
+            let response = reqwest::get(&url).await;
+            match response {
+                Ok(res) => {
+                    let data: Value = match res.json().await {
+                        Ok(json) => {
+                            if mod_loader.is_some() && self.mod_loader.is_none() {
+                                self.mod_loader = mod_loader.clone();
+                            }
+                            json
+                        }
+                        Err(e) => {
+                            println!("Failed to parse JSON response: {}", e);
+                            if counter == 0 {
+                                counter += 1;
+                                continue;
+                            }
+                            return;
+                        }
+                    };
+
+                    if self.mod_id.is_none() {
+                        // If searching by name and multiple results are found
+                        if let Some(mods) = data["hits"].as_array() {
+                            if mods.len() > 1 {
+                                println!("Multiple mods found. Please select one:");
+                                for (index, mod_entry) in mods.iter().enumerate() {
+                                    let name = mod_entry["title"].as_str().unwrap_or("Unknown Mod");
+                                    // Sets the ModrinthEntry Name to a value so we can download dependencies later
+                                    let author =
+                                        mod_entry["author"].as_str().unwrap_or("Unknown Author");
+                                    println!("{}: {} by {}", index + 1, name, author);
+                                }
+                                let mut input = String::new();
+                                std::io::stdin()
+                                    .read_line(&mut input)
+                                    .expect("Failed to read input");
+                                let choice: usize = match input.trim().parse() {
+                                    Ok(num) if num > 0 && num <= mods.len() => num,
+                                    _ => {
+                                        println!("Invalid selection.");
+                                        return;
+                                    }
+                                };
+                                if let Some(selected_mod) = mods.get(choice - 1) {
+                                    mod_id_or_name = selected_mod["project_id"]
+                                        .as_str()
+                                        .expect("Mod ID not found")
+                                        .to_string();
+
+                                    self.mod_id = Some(mod_id_or_name.clone().into());
+                                    *mod_id = Some(mod_id_or_name.clone());
+                                    continue; // Restart the loop with the selected mod ID
+                                }
+                            }
+                        }
+                    }
+                    // Mod ID Selected
+                    if let Some(files) = self.extract_files(&data, version.clone()).await {
+                        for file in files {
+                            let download_url = file.get("url").and_then(|u| u.as_str());
+                            if let Some(download_url) = download_url {
+                                println!("Downloading from: {}", download_url);
+
+                                match reqwest::get(download_url).await {
+                                    Ok(res) => {
+                                        let content = match res.bytes().await {
+                                            Ok(bytes) => bytes,
+                                            Err(e) => {
+                                                println!("Failed to read file content: {}", e);
+                                                continue;
+                                            }
+                                        };
+
+                                        let file_name = file
+                                            .get("filename")
+                                            .and_then(|f| f.as_str())
+                                            .unwrap_or("mod_file.zip");
+
+                                        // Determine the full path
+                                        let full_path = download_path
+                                            .clone()
+                                            .unwrap_or_else(|| std::env::current_dir().unwrap())
+                                            .join(file_name);
+
+                                        // Save the file
+                                        match std::fs::write(&full_path, content) {
+                                            Ok(_) => {
+                                                println!(
+                                                    "Downloaded: {}",
+                                                    full_path.to_string_lossy()
+                                                );
+                                                if dependencies.is_some() {
+                                                    let do_download_dependencies =
+                                                        dependencies.unwrap();
+                                                    if do_download_dependencies {
+                                                        self.verify_dependencies(
+                                                            download_path.clone(),
+                                                        )
+                                                        .await;
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => println!(
+                                                "Failed to save file to {}: {}",
+                                                full_path.to_string_lossy(),
+                                                e
+                                            ),
+                                        }
+                                    }
+                                    Err(e) => println!("Failed to download file: {}", e),
+                                }
+                            }
+                        }
+                    } else {
+                        println!("No suitable mod files found for the given criteria.");
+                    }
+                    return;
+                }
+                Err(e) => {
+                    println!("Failed to fetch mod information: {}", e);
+                    if counter == 0 {
+                        counter += 1;
+                        continue;
+                    }
+                    return;
+                }
+            }
+        }
+    }
 
     /// Check if the version (if provided) matches the data and returns the json for file[] which has the download url
     async fn extract_files(&mut self, data: &Value, version: Option<String>) -> Option<Vec<Value>> {

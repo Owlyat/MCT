@@ -30,6 +30,20 @@ impl PaperMCBuild {
             ..Default::default()
         }
     }
+    pub fn get_version(&mut self) -> Option<String> {
+        if self.game_version.is_some() {
+            Some(self.game_version.clone().unwrap())
+        } else {
+            None
+        }
+    }
+    pub fn get_server_dir(&mut self) -> Option<PathBuf> {
+        if self.server_path.is_some() {
+            self.server_path.clone()
+        } else {
+            None
+        }
+    }
 }
 
 impl Default for PaperMCBuild {
