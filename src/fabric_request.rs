@@ -1,8 +1,10 @@
+use inquire::Select;
 use reqwest::Error;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 const FABRICMC_API_GAME_VERSIONS: &str = "https://meta.fabricmc.net/v2/versions/game";
 const FABRICMC_API_LOADER_VERSIONS: &str = "https://meta.fabricmc.net/v2/versions/loader";
@@ -27,7 +29,7 @@ struct InstallerVersion {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct FabricMCClient {
+pub struct FabricMCRequest {
     project: String,
     game_version: Option<String>,
     loader_version: Option<String>,
@@ -36,7 +38,7 @@ pub struct FabricMCClient {
     server_path: Option<PathBuf>,
 }
 
-impl FabricMCClient {
+impl FabricMCRequest {
     /// Creates a new instance of `FabricMCClient`
     pub fn build(server_path: Option<PathBuf>) -> Self {
         if server_path.is_some() {
@@ -89,6 +91,7 @@ impl FabricMCClient {
 
         if game_version.is_some() {
             let gv = game_version.unwrap();
+
             for entry in versions.iter() {
                 if gv == entry.version {
                     self.game_version = Some(entry.version.clone());
@@ -101,29 +104,15 @@ impl FabricMCClient {
             }
         }
 
-        println!("\n📌 Available Minecraft Versions:");
-        for (index, entry) in versions.iter().enumerate().rev() {
-            println!("{}: {}", index, entry.version);
-        }
-
-        loop {
-            print!("\n➡️ Enter the number of the game version you want: ");
-            io::stdout().flush().unwrap();
-            let mut input = String::new();
-            io::stdin().read_line(&mut input).unwrap();
-
-            match input.trim().parse::<usize>() {
-                Ok(num) if num < versions.len() => {
-                    self.game_version = Some(versions[num].version.clone());
-                    println!(
-                        "✅ Selected Game Version: {}",
-                        self.game_version.as_ref().unwrap()
-                    );
-                    break;
-                }
-                _ => println!("❌ Invalid input. Try again."),
-            }
-        }
+        let options: Vec<String> = versions.iter().rev().map(|gv| gv.version.clone()).collect();
+        let selected_game_version = Select::new("Select your game version ➡️", options)
+            .prompt()
+            .unwrap();
+        self.game_version = Some(selected_game_version);
+        println!(
+            "✅ Selected Game Version: {}",
+            self.game_version.as_ref().unwrap()
+        );
     }
 
     /// Prompts the user to select a loader version
@@ -133,30 +122,15 @@ impl FabricMCClient {
             println!("❌ No loader versions found.");
             return;
         }
-
-        println!("\n📌 Available Fabric Loader Versions:");
-        for (index, entry) in versions.iter().enumerate().rev() {
-            println!("{}: {}", index, entry.version);
-        }
-
-        loop {
-            print!("\n➡️ Enter the number of the loader version you want: ");
-            io::stdout().flush().unwrap();
-            let mut input = String::new();
-            io::stdin().read_line(&mut input).unwrap();
-
-            match input.trim().parse::<usize>() {
-                Ok(num) if num < versions.len() => {
-                    self.loader_version = Some(versions[num].version.clone());
-                    println!(
-                        "✅ Selected Loader Version: {}",
-                        self.loader_version.as_ref().unwrap()
-                    );
-                    break;
-                }
-                _ => println!("❌ Invalid input. Try again."),
-            }
-        }
+        let options: Vec<String> = versions.iter().map(|e| e.version.clone()).collect();
+        let selected_loader = Select::new("Select the loader version you want ➡️", options)
+            .prompt()
+            .unwrap();
+        self.loader_version = Some(selected_loader);
+        println!(
+            "✅ Selected Loader Version: {}",
+            self.loader_version.as_ref().unwrap()
+        );
     }
 
     /// Fetches the latest installer version
@@ -237,14 +211,14 @@ impl FabricMCClient {
                     .into_owned();
                 let eula_path = Path::new(&value);
                 if eula_path.is_file() {
-                    println!("Eula already generated !");
+                    println!("➡️ Eula already generated !");
                     match fs::read_to_string(eula_path) {
                         Ok(v) => {
                             let eula_str = v.replace("false", "true");
                             fs::write(Path::new(&value), eula_str).unwrap();
                         }
                         Err(_) => {
-                            println!("Error reading eula file !")
+                            println!("❌ Error reading eula file !")
                         }
                     }
                 }
@@ -283,12 +257,15 @@ impl FabricMCClient {
         std::process::Command::new("java")
             .args(&java_args)
             .current_dir(self.server_path.as_ref().unwrap())
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
             .spawn()
             .expect("❌ Failed to start server.");
     }
 }
 
-impl FabricMCClient {
+impl FabricMCRequest {
     pub fn get_version(&self) -> Option<String> {
         self.game_version.clone()
     }
@@ -307,7 +284,7 @@ impl FabricMCClient {
     }
 }
 
-impl FabricMCClient {
+impl FabricMCRequest {
     pub fn check_data(&mut self, path: Option<PathBuf>) -> Result<(), ()> {
         let path = if path.is_some() {
             path.unwrap()
@@ -323,7 +300,7 @@ impl FabricMCClient {
             Ok(data) => {
                 let mut input = String::new();
                 data.read_to_string(&mut input).unwrap();
-                let fabric: FabricMCClient = serde_json::from_str(&input).unwrap();
+                let fabric: FabricMCRequest = serde_json::from_str(&input).unwrap();
                 self.project = fabric.project;
                 self.game_version = fabric.game_version;
                 self.loader_version = fabric.loader_version;

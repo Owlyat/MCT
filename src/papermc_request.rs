@@ -1,12 +1,9 @@
 use core::panic;
-use std::{
-    fs,
-    io::Read,
-    path::{Path, PathBuf},
-};
+use inquire::Select;
+use std::{fs, io::Read, path::PathBuf, process::Stdio};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Number, Value};
 
 const PAPERMC_API: &str = "https://api.papermc.io";
 /// arg 1 : Game version
@@ -15,29 +12,30 @@ const PAPERMC_API_BUILDS: &[&str; 2] = &["/v2/projects/paper/versions/", "/build
 const PAPERMC_API_DOWNLOAD_BUILD: &[&str; 4] =
     &["/v2/projects/", "/versions/", "/builds/", "/downloads/"];
 #[derive(Serialize, Deserialize)]
-pub struct PaperMCBuild {
+pub struct PaperMCRequest {
     project: Option<String>,
     game_version: Option<String>,
     build: Option<i64>,
     download: Option<String>,
     response: Option<Value>,
     server_path: Option<PathBuf>,
+    jar_path: Option<PathBuf>,
 }
 
-impl PaperMCBuild {
+impl PaperMCRequest {
     pub fn build() -> Self {
         Self {
             ..Default::default()
         }
     }
-    pub fn get_version(&mut self) -> Option<String> {
+    pub fn _get_version(&mut self) -> Option<String> {
         if self.game_version.is_some() {
             Some(self.game_version.clone().unwrap())
         } else {
             None
         }
     }
-    pub fn get_server_dir(&mut self) -> Option<PathBuf> {
+    pub fn _get_server_dir(&mut self) -> Option<PathBuf> {
         if self.server_path.is_some() {
             self.server_path.clone()
         } else {
@@ -46,7 +44,7 @@ impl PaperMCBuild {
     }
 }
 
-impl Default for PaperMCBuild {
+impl Default for PaperMCRequest {
     fn default() -> Self {
         Self {
             project: None,
@@ -55,76 +53,94 @@ impl Default for PaperMCBuild {
             download: None,
             response: None,
             server_path: None,
+            jar_path: None,
         }
     }
 }
-impl PaperMCBuild {
-    pub async fn check_build(&mut self, game_version: String, build: Option<String>) {
+impl PaperMCRequest {
+    pub async fn check_build(&mut self, game_version: Option<String>, build: Option<String>) {
+        if game_version.is_none() {
+            println!("❌ No game version provided !");
+            return;
+        }
         let url = if build.is_none() {
             format!(
                 "{}{}{}{}",
-                PAPERMC_API, PAPERMC_API_BUILDS[0], game_version, PAPERMC_API_BUILDS[1]
+                PAPERMC_API,
+                PAPERMC_API_BUILDS[0],
+                game_version.clone().unwrap(),
+                PAPERMC_API_BUILDS[1]
             )
         } else {
             format!(
                 "{}{}{}{}{}",
                 PAPERMC_API,
                 PAPERMC_API_BUILDS[0],
-                game_version,
+                game_version.clone().unwrap(),
                 PAPERMC_API_BUILDS[1],
                 build.clone().unwrap()
             )
         };
-        let response = reqwest::get(url).await;
+        println!("➡️ Fetching from : {}", url);
+        let response = reqwest::get(url.clone()).await;
 
         match response {
             Ok(response) => {
                 if let Ok(json) = response.json::<Value>().await {
                     if let Some(builds) = json["builds"].as_array() {
-                        for (index, build) in builds.iter().enumerate() {
-                            println!("index : {}", index);
-                            //println!("{:#?}", build);
-                            if let Some(build_num) = build["build"].as_number() {
-                                println!("Build : {}", build_num);
+                        let options: Vec<(&Number, String)> = builds
+                            .iter()
+                            .rev()
+                            .map(|b| {
+                                (
+                                    b["build"].as_number().unwrap(),
+                                    b["downloads"].as_object().unwrap()["application"]
+                                        .as_object()
+                                        .unwrap()["name"]
+                                        .as_str()
+                                        .unwrap()
+                                        .to_owned(),
+                                )
+                            })
+                            .collect();
+                        let selected_build = Select::new(
+                            "➡️ Select Build Number",
+                            options.iter().map(|b| b.1.clone()).collect(),
+                        )
+                        .prompt()
+                        .unwrap();
+                        let selected_build = builds.into_iter().find(|b| {
+                            if b["downloads"].as_object().unwrap()["application"]
+                                .as_object()
+                                .unwrap()["name"]
+                                .as_str()
+                                .unwrap()
+                                == selected_build
+                            {
+                                true
+                            } else {
+                                false
                             }
-                            if let Some(download) = build["downloads"].as_object() {
-                                if let Some(application) = download["application"].as_object() {
-                                    if let Some(name) = application["name"].as_str() {
-                                        println!("{}", name);
-                                    }
-                                }
-                            }
-                            println!()
-                        }
-                        loop {
-                            println!("Please select a build : ");
-                            let mut input = String::new();
-                            std::io::stdin().read_line(&mut input).unwrap();
-                            let selected = match input.trim().parse::<usize>() {
-                                Ok(v) => v,
-                                Err(_) => continue,
-                            };
-                            for (index, build) in builds.iter().enumerate() {
-                                if selected == index {
-                                    self.project = Some("paper".to_owned());
-                                    self.game_version = Some(game_version.clone());
-                                    if let Some(build_num) = build["build"].as_number() {
-                                        self.build = Some(build_num.as_i64().unwrap());
-                                    }
-                                    if let Some(download) = build["downloads"].as_object() {
-                                        if let Some(application) =
-                                            download["application"].as_object()
-                                        {
-                                            if let Some(name) = application["name"].as_str() {
-                                                self.download = Some(name.to_owned());
-                                                println!("You choose : {}", name);
-                                            }
-                                        }
-                                    }
-                                    return;
-                                }
-                            }
-                        }
+                        });
+                        selected_build.iter().for_each(|b| {
+                            self.build = Some(b["build"].as_number().unwrap().as_i64().unwrap());
+                            self.project = Some(String::from("paper"));
+                            self.game_version = Some(game_version.clone().unwrap());
+                            self.download = Some(
+                                b["downloads"].as_object().unwrap()["application"]
+                                    .as_object()
+                                    .unwrap()["name"]
+                                    .as_str()
+                                    .unwrap()
+                                    .to_owned(),
+                            );
+                        });
+                        return;
+                    } else {
+                        panic!(
+                            "❌ No builds found from response !\n    ⏬ Response from url {} ⏬\n{:#?}",
+                            url, json
+                        );
                     }
                 }
             }
@@ -136,7 +152,7 @@ impl PaperMCBuild {
     }
 }
 
-impl PaperMCBuild {
+impl PaperMCRequest {
     pub async fn download_build(&mut self, server_path: PathBuf) {
         if self.project.is_some() {
             if self.game_version.is_some() {
@@ -160,144 +176,100 @@ impl PaperMCBuild {
                             Ok(res) => {
                                 let content = match res.bytes().await {
                                     Ok(bytes) => bytes,
-                                    Err(e) => panic!("{}", e),
+                                    Err(e) => panic!("❌ Error while writting bytes : {}", e),
                                 };
-                                match fs::write(
-                                    server_path.join(self.download.clone().unwrap()),
-                                    content,
-                                ) {
+                                self.server_path = Some(server_path);
+                                self.jar_path = Some(
+                                    self.server_path
+                                        .clone()
+                                        .unwrap()
+                                        .join(self.download.clone().unwrap()),
+                                );
+                                match fs::write(self.jar_path.clone().unwrap(), content) {
                                     Ok(_) => {
-                                        println! {"Downloaded : {}", server_path.join(self.download.clone().unwrap()).to_string_lossy()}
-                                        self.server_path =
-                                            Some(server_path.join(self.download.clone().unwrap()));
+                                        println! {"✅ Downloaded : {}", self.jar_path.clone().unwrap().to_string_lossy().replace("\\", "/")}
                                     }
-                                    Err(_) => todo!(),
+                                    Err(e) => panic!("❌ Error while writting file : {}", e),
                                 }
                             }
-                            Err(e) => panic!("{}", e),
+                            Err(e) => panic!("❌ Error with the web request : {}", e),
                         }
                     } else {
-                        todo!("Missing Download")
+                        panic!("❌ Missing Download!")
                     }
                 } else {
-                    todo!("Missing Build")
+                    panic!("❌ Missing Build!")
                 }
             } else {
-                todo!("Missing Game Version")
+                panic!("❌ Missing Game Version!")
             }
         } else {
-            todo!("Missing Project")
+            panic!("❌ Missing Project!")
         }
     }
 }
 
-impl PaperMCBuild {
+impl PaperMCRequest {
     pub fn start_server(&mut self, xmx: Option<String>, xms: Option<String>, is_gui: Option<bool>) {
-        let mut java_args: Vec<String> = vec![];
-        let mut startup_script = String::from("java ");
-        if let Some(xmx) = &xmx {
-            java_args.push(format!("-Xmx{}", xmx));
-            startup_script.push_str(&format!("-Xmx{}", xmx));
-        }
+        let mut java_args: Vec<String> = vec!["-jar".to_owned()];
+        java_args.push(self.download.clone().unwrap());
         if let Some(xms) = xms {
-            java_args.push(format!("-Xms{}", xms));
-            startup_script.push_str(&format!("-Xms{}", xms));
+            java_args.insert(0, format!("-Xms{}", xms));
         }
+        if let Some(xmx) = &xmx {
+            java_args.insert(0, format!("-Xmx{}", xmx));
+        }
+        // Ensure the EULA is accepted
+        let eula_path = self.server_path.as_ref().unwrap().join("eula.txt");
 
-        match fs::write(
-            self.server_path
-                .clone()
-                .unwrap()
-                .to_string_lossy()
-                .replace(&self.download.clone().unwrap(), "eula.txt"),
-            "eula=true",
-        ) {
-            Ok(_) => {
-                println!("Eula are agreed !")
-            }
-            Err(_) => {
-                let value: String = self
-                    .server_path
-                    .clone()
-                    .unwrap()
-                    .to_string_lossy()
-                    .replace(&self.download.clone().unwrap(), "eula.txt");
-                let eula_path = Path::new(&value);
-                if eula_path.is_file() {
-                    println!("Eula already generated !");
-                    match fs::read_to_string(eula_path) {
-                        Ok(v) => {
-                            let eula_str = v.replace("false", "true");
-                            fs::write(Path::new(&value), eula_str).unwrap();
-                        }
-                        Err(_) => {
-                            println!("Error reading eula file !")
-                        }
-                    }
-                }
+        if let Err(_) = fs::write(&eula_path, "eula=true") {
+            if let Ok(eula_content) = fs::read_to_string(&eula_path) {
+                let updated_eula = eula_content.replace("false", "true");
+                let _ = fs::write(&eula_path, updated_eula);
             }
         }
 
-        java_args.push(format!("-jar"));
-        java_args.push(format!("{}", self.download.clone().unwrap()));
-        startup_script.push_str(&format!("-jar {}", self.download.clone().unwrap()));
-        if is_gui.is_some() && !is_gui.unwrap() || is_gui.is_none() {
-            java_args.push(format!("-nogui"));
-            startup_script.push_str(" -nogui");
+        if is_gui.is_none() || !is_gui.unwrap() {
+            java_args.push("-nogui".to_owned());
         }
 
-        let path = self
-            .server_path
-            .clone()
-            .unwrap()
-            .to_string_lossy()
-            .replace(&self.download.clone().unwrap(), "start.bat");
-        fs::write(Path::new(&path), startup_script.clone()).unwrap();
-        let data_path = self
-            .server_path
-            .clone()
-            .unwrap()
-            .to_string_lossy()
-            .replace(&self.download.clone().unwrap(), "MCA.json");
+        let data_path = self.server_path.clone().unwrap().join("MCA.json");
         fs::write(
             data_path,
             serde_json::to_string_pretty(&self).unwrap().as_bytes(),
         )
         .unwrap();
         match std::process::Command::new("java")
-            .args(java_args.clone())
-            .current_dir(PathBuf::from(format!(
-                "{}",
-                self.server_path
-                    .clone()
-                    .unwrap()
-                    .to_string_lossy()
-                    .replace(&self.download.clone().unwrap(), "")
-            )))
+            .args(&java_args)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .current_dir(self.server_path.clone().unwrap())
             .spawn()
         {
             Ok(_) => {}
             Err(e) => {
-                println!("{:#?}", java_args);
-                panic!("{}", e);
+                println!("➡️ Command: java {:?}", java_args);
+                panic!("    ❌➡️{}", e);
             }
         };
     }
 }
-
-impl PaperMCBuild {
+/// Check MCA.json and sets the Paper server values if found
+impl PaperMCRequest {
     pub fn check_data(&mut self, path: PathBuf) -> Result<(), ()> {
         let potential_data = path.join("MCA.json");
         match &mut fs::File::open(potential_data) {
             Ok(data) => {
                 let mut input = String::new();
                 data.read_to_string(&mut input).unwrap();
-                let paper: PaperMCBuild = serde_json::from_str(&input).unwrap();
+                let paper: PaperMCRequest = serde_json::from_str(&input).unwrap();
                 self.project = paper.project;
                 self.game_version = paper.game_version;
                 self.build = paper.build;
                 self.download = paper.download;
                 self.server_path = paper.server_path;
+                self.jar_path = paper.jar_path;
                 Ok(())
             }
             Err(_) => Err(()),

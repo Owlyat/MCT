@@ -2,9 +2,9 @@ mod fabric_request;
 mod modrinth_request;
 mod papermc_request;
 use clap::{Arg, Command};
-use fabric_request::FabricMCClient;
+use fabric_request::FabricMCRequest;
 use modrinth_request::{ModrinthEntry, ModrinthSortingFilter};
-use papermc_request::PaperMCBuild;
+use papermc_request::PaperMCRequest;
 use reqwest::Error;
 
 #[tokio::main]
@@ -193,7 +193,7 @@ async fn main() -> Result<(), Error> {
                     .long("game_version")
                     .short('v')
                     .help("Minecraft version ex: 1.20.1")
-                    .required(true))
+                    .required(false))
             .arg(
                 Arg::new("Build")
                     .long("build")
@@ -213,7 +213,7 @@ async fn main() -> Result<(), Error> {
 
     match commands.subcommand() {
         Some(("Search", sub_commands)) => {
-            let mod_name = sub_commands.get_one::<String>("Name").unwrap();
+            let name = sub_commands.get_one::<String>("Name").unwrap();
             let version = sub_commands.get_one::<String>("Project_Version");
             let loader = sub_commands.get_one::<String>("With_Loader");
             let max_mods_number = sub_commands.get_one::<usize>("Result_Number");
@@ -226,7 +226,7 @@ async fn main() -> Result<(), Error> {
             let mut modrinth_mod = ModrinthEntry::builder();
             modrinth_mod
                 .search_modrinth(
-                    mod_name,
+                    name,
                     version,
                     loader,
                     max_mods_number.cloned(),
@@ -251,17 +251,17 @@ async fn main() -> Result<(), Error> {
 
             if for_server.is_some() {
                 let server_path = verify_path(for_server.cloned());
-                let mut fabric_client = FabricMCClient::build(server_path);
-                match fabric_client.check_data(None) {
+                let mut fabric_server = FabricMCRequest::build(server_path);
+                match fabric_server.check_data(None) {
                     Ok(_) => {
-                        let mut modrinth_req = ModrinthEntry::builder();
-                        modrinth_req
+                        let mut modrinth_entry = ModrinthEntry::builder();
+                        modrinth_entry
                             .download_server_mod(
                                 &mut id.cloned(),
                                 name.cloned(),
                                 Some("fabric".to_owned()),
-                                fabric_client.get_version(),
-                                fabric_client.get_download_path(),
+                                fabric_server.get_version(),
+                                fabric_server.get_download_path(),
                                 Some(true),
                             )
                             .await;
@@ -269,8 +269,8 @@ async fn main() -> Result<(), Error> {
                     Err(_) => {}
                 }
             } else {
-                let mut modrinth_req = ModrinthEntry::builder();
-                modrinth_req
+                let mut modrinth_entry = ModrinthEntry::builder();
+                modrinth_entry
                     .download_mod(
                         &mut id.cloned(),
                         name.cloned(),
@@ -284,96 +284,178 @@ async fn main() -> Result<(), Error> {
         }
         Some(("Create_Server", sub_commands)) => {
             let path = sub_commands.get_one::<String>("Path");
-            let path = check_server_path(path.cloned()).unwrap();
             let game_version = sub_commands.get_one::<String>("Game_Version");
-            let game_version_unwrapped = game_version.unwrap().to_owned();
             let build = sub_commands.get_one::<String>("Build");
             let platform = sub_commands.get_one::<String>("Platform");
             let xmx = sub_commands.get_one::<String>("Max_Ram");
             let xms = sub_commands.get_one::<String>("Min_Ram");
             let is_gui = sub_commands.get_one::<bool>("Gui");
-            let do_open_public_ip = sub_commands.get_one::<bool>("Public_IP");
+            let open_with_public_ip = sub_commands.get_one::<bool>("Public_IP");
 
-            if platform.is_some() && platform.clone().unwrap().to_lowercase() == "paper"
-                || platform.is_none()
-            {
-                let mut paperbuild = PaperMCBuild::build();
-                match paperbuild.check_data(path.clone()) {
-                    Ok(_) => {
-                        if do_open_public_ip.is_some() {
-                            if do_open_public_ip.unwrap().clone() {
-                                std::process::Command::new("cmd")
-                                    .args(["/C", "ssh", "-R", "0:localhost:25565", "serveo.net"])
-                                    .spawn()
-                                    .unwrap();
-                            }
-                        }
-                        paperbuild.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
-                    }
-                    Err(_) => {
-                        paperbuild
-                            .check_build(game_version_unwrapped.clone(), build.cloned())
-                            .await;
-                        paperbuild.download_build(path).await;
-                        if do_open_public_ip.is_some() {
-                            if do_open_public_ip.unwrap().clone() {
-                                std::process::Command::new("cmd")
-                                    .args(["/C", "ssh", "-R", "0:localhost:25565", "serveo.net"])
-                                    .spawn()
-                                    .unwrap();
-                            }
-                        }
-
-                        paperbuild.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
-                    }
+            let path = match check_server_path(path.cloned()) {
+                Ok(p) => p,
+                Err(e) => {
+                    panic!("❌ Error while checking the server path\n    ➡️ {}", e)
                 }
-            } else {
-                if platform.is_some() && platform.cloned().unwrap().to_lowercase() == "fabric" {
-                    let mut fabric_client = FabricMCClient::build(Some(path.clone()));
-                    match fabric_client.check_data(Some(path.clone())) {
+            };
+            match platform {
+                Some(p) if p.to_lowercase() == "paper" => {
+                    let mut paper_server = PaperMCRequest::build();
+                    match paper_server.check_data(path.clone()) {
                         Ok(_) => {
-                            if do_open_public_ip.unwrap().clone() {
-                                std::process::Command::new("cmd")
-                                    .args(["/C", "ssh", "-R", "0:localhost:25565", "serveo.net"])
-                                    .spawn()
-                                    .unwrap();
+                            match open_with_public_ip {
+                                Some(do_open) => {
+                                    if *do_open {
+                                        std::process::Command::new("cmd")
+                                            .args([
+                                                "/C",
+                                                "ssh",
+                                                "-R",
+                                                "0:localhost:25565",
+                                                "serveo.net",
+                                            ])
+                                            .spawn()
+                                            .unwrap();
+                                    }
+                                }
+                                None => {}
                             }
-
-                            fabric_client.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
+                            paper_server.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
                         }
                         Err(_) => {
-                            fabric_client
-                                .select_game_version(Some(game_version_unwrapped))
+                            paper_server
+                                .check_build(game_version.cloned(), build.cloned())
                                 .await;
+                            paper_server.download_build(path).await;
 
-                            fabric_client.select_loader_version().await;
-                            fabric_client.fetch_latest_installer_version().await;
-
-                            fabric_client.generate_download_url();
-
-                            fabric_client.download_build(path).await;
-                            if do_open_public_ip.is_some() {
-                                if do_open_public_ip.unwrap().clone() {
-                                    std::process::Command::new("cmd")
-                                        .args([
-                                            "/C",
-                                            "ssh",
-                                            "-R",
-                                            "0:localhost:25565",
-                                            "serveo.net",
-                                        ])
-                                        .spawn()
-                                        .unwrap();
+                            match open_with_public_ip {
+                                Some(do_open) => {
+                                    if *do_open {
+                                        std::process::Command::new("cmd")
+                                            .args([
+                                                "/C",
+                                                "ssh",
+                                                "-R",
+                                                "0:localhost:25565",
+                                                "serveo.net",
+                                            ])
+                                            .spawn()
+                                            .unwrap();
+                                    }
                                 }
+                                None => {}
                             }
+                            paper_server.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
+                        }
+                    }
+                }
+                Some(p) if p.to_lowercase() == "fabric" => {
+                    let mut fabric_server = FabricMCRequest::build(Some(path.clone()));
+                    match fabric_server.check_data(Some(path.clone())) {
+                        Ok(_) => {
+                            match open_with_public_ip {
+                                Some(do_open_public) => {
+                                    if *do_open_public {
+                                        std::process::Command::new("cmd")
+                                            .args([
+                                                "/C",
+                                                "ssh",
+                                                "-R",
+                                                "0:localhost:25565",
+                                                "serveo.net",
+                                            ])
+                                            .spawn()
+                                            .unwrap();
+                                    }
+                                }
+                                None => (),
+                            }
+                            fabric_server.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
+                        }
+                        Err(_) => {
+                            fabric_server
+                                .select_game_version(game_version.cloned())
+                                .await;
+                            fabric_server.select_loader_version().await;
+                            fabric_server.fetch_latest_installer_version().await;
+                            fabric_server.generate_download_url();
+                            fabric_server.download_build(path).await;
+                            match open_with_public_ip {
+                                Some(do_open_public) => {
+                                    if *do_open_public {
+                                        std::process::Command::new("cmd")
+                                            .args([
+                                                "/C",
+                                                "ssh",
+                                                "-R",
+                                                "0:localhost:25565",
+                                                "serveo.net",
+                                            ])
+                                            .spawn()
+                                            .unwrap();
+                                    }
+                                }
+                                None => (),
+                            }
+                            fabric_server.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
+                        }
+                    }
+                }
+                _ => {
+                    let mut paper_server = PaperMCRequest::build();
+                    match paper_server.check_data(path.clone()) {
+                        Ok(_) => {
+                            println!("✅ MCA.json Found !");
+                            match open_with_public_ip {
+                                Some(do_open) => {
+                                    if *do_open {
+                                        std::process::Command::new("cmd")
+                                            .args([
+                                                "/C",
+                                                "ssh",
+                                                "-R",
+                                                "0:localhost:25565",
+                                                "serveo.net",
+                                            ])
+                                            .spawn()
+                                            .unwrap();
+                                    }
+                                }
+                                None => {}
+                            }
+                            paper_server.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
+                        }
+                        Err(_) => {
+                            println!("➡️ No MCA.json Found");
+                            paper_server
+                                .check_build(game_version.cloned(), build.cloned())
+                                .await;
+                            paper_server.download_build(path).await;
 
-                            fabric_client.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
+                            match open_with_public_ip {
+                                Some(do_open) => {
+                                    if *do_open {
+                                        std::process::Command::new("cmd")
+                                            .args([
+                                                "/C",
+                                                "ssh",
+                                                "-R",
+                                                "0:localhost:25565",
+                                                "serveo.net",
+                                            ])
+                                            .spawn()
+                                            .unwrap();
+                                    }
+                                }
+                                None => {}
+                            }
+                            paper_server.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
                         }
                     }
                 }
             }
         }
-        _ => (),
+        _ => {}
     }
 
     Ok(())
@@ -393,16 +475,17 @@ fn verify_path(path: Option<String>) -> Option<PathBuf> {
 
         // Check if the path exists and is a directory
         if path.exists() && path.is_dir() {
+            println!("✅ Download path : '{}'", path.to_string_lossy());
             Some(path.to_path_buf())
         } else {
             println!(
-                "Invalid path: '{}'. Path does not exist or is not a directory.",
+                "❌ Invalid path: '{}'. Path does not exist or is not a directory.",
                 dlpath
             );
             None
         }
     } else {
-        println!("Path option is None !");
+        println!("➡️ No download path provided");
         None
     }
 }
@@ -412,13 +495,13 @@ fn check_server_path(path: Option<String>) -> Result<PathBuf, std::io::Error> {
     if path.clone().is_some() {
         if Path::new(&path.clone().unwrap()).exists() {
             // Path already exists
-            println!("Server directory Found");
+            println!("✅ Server directory Found");
             Ok(Path::new(&path.unwrap()).to_path_buf())
         } else {
             // Created Dir
             match fs::create_dir(Path::new(&path.clone().unwrap())) {
                 Ok(_) => {
-                    println!("Server directory created Successfully");
+                    println!("✅ Server directory created Successfully");
                     Ok(Path::new(&path.unwrap()).to_path_buf())
                 }
                 Err(e) => Err(e),
@@ -429,12 +512,15 @@ fn check_server_path(path: Option<String>) -> Result<PathBuf, std::io::Error> {
         let default_path = "./MCT Server";
 
         if Path::new(default_path).exists() {
-            println!("Default Server directory Found");
+            println!("✅ Default Server directory Found");
             Ok(Path::new(default_path).to_path_buf())
         } else {
             match fs::create_dir(default_path) {
                 Ok(_) => {
-                    println!("Default Server directory created Successfully");
+                    println!(
+                        "✅ Default Server directory created Successfully at {}",
+                        Path::new(default_path).to_string_lossy()
+                    );
                     Ok(Path::new(default_path).to_path_buf())
                 }
                 Err(e) => Err(e),

@@ -1,3 +1,4 @@
+use inquire::Select;
 const SEARCH_API_END_POINT: &str = "https://api.modrinth.com/v2/search";
 const MOD_LOADERS: &[&str; 7] = &[
     "fabric",
@@ -313,35 +314,37 @@ impl ModrinthEntry {
                         // If searching by name and multiple results are found
                         if let Some(mods) = data["hits"].as_array() {
                             if mods.len() > 1 {
-                                println!("Multiple mods found. Please select one:");
-                                for (index, mod_entry) in mods.iter().enumerate() {
-                                    let name = mod_entry["title"].as_str().unwrap_or("Unknown Mod");
-                                    // Sets the ModrinthEntry Name to a value so we can download dependencies later
-                                    let author =
-                                        mod_entry["author"].as_str().unwrap_or("Unknown Author");
-                                    println!("{}: {} by {}", index + 1, name, author);
-                                }
-                                let mut input = String::new();
-                                std::io::stdin()
-                                    .read_line(&mut input)
-                                    .expect("Failed to read input");
-                                let choice: usize = match input.trim().parse() {
-                                    Ok(num) if num > 0 && num <= mods.len() => num,
-                                    _ => {
-                                        println!("Invalid selection.");
-                                        return;
-                                    }
-                                };
-                                if let Some(selected_mod) = mods.get(choice - 1) {
-                                    mod_id_or_name = selected_mod["project_id"]
-                                        .as_str()
-                                        .expect("Mod ID not found")
-                                        .to_string();
+                                let options: Vec<String> = mods
+                                    .iter()
+                                    .map(|m| {
+                                        format!(
+                                            "{}\nAuthor: {}\nDescription: {}",
+                                            m["title"].as_str().unwrap(),
+                                            m["author"].as_str().unwrap(),
+                                            m["description"].as_str().unwrap(),
+                                        )
+                                    })
+                                    .collect();
+                                let selected_mod: String =
+                                    Select::new("Please Select a mod ➡️", options)
+                                        .prompt()
+                                        .unwrap();
 
-                                    self.mod_id = Some(mod_id_or_name.clone().into());
-                                    *mod_id = Some(mod_id_or_name.clone());
-                                    continue; // Restart the loop with the selected mod ID
-                                }
+                                mods.iter().for_each(|m| {
+                                    if selected_mod.starts_with(m["title"].as_str().unwrap())
+                                        && selected_mod.contains(m["author"].as_str().unwrap())
+                                        && selected_mod.contains(m["description"].as_str().unwrap())
+                                    {
+                                        mod_id_or_name = m["project_id"]
+                                            .as_str()
+                                            .expect("Mod ID not found")
+                                            .to_string();
+
+                                        self.mod_id = Some(mod_id_or_name.clone().into());
+                                        *mod_id = Some(mod_id_or_name.clone());
+                                    }
+                                });
+                                continue;
                             }
                         }
                     }
@@ -430,13 +433,16 @@ impl ModrinthEntry {
         download_path: Option<PathBuf>,
         dependencies: Option<bool>,
     ) {
+        let version = if let Some(v) = self.mod_version.clone() {
+            Some(format!("{}", v))
+        } else {
+            version
+        };
         let mut mod_id_or_name = mod_id
             .clone()
             .or_else(|| mod_name.clone())
             .expect("Either mod_id or mod_name must be provided");
 
-        // If the first request fails, retry it once.
-        let mut counter = 0;
         loop {
             // Construct the API endpoint
             let url = if mod_id.is_some() {
@@ -446,10 +452,10 @@ impl ModrinthEntry {
                 )
             } else {
                 match (mod_loader.is_some(), version.is_some()) {
-                    (true, true) => format!("{}?query={}&facets=[[\"project_type:mod\"],[\"categories:{}\"],[\"versions:{}\"],[\"server_side:required\"]]",SEARCH_API_END_POINT,mod_id_or_name,mod_loader.clone().unwrap(),version.clone().unwrap()),
-                    (true, false) => format!("{}?query={}&facets=[[\"project_type:mod\"],[\"categories:{}\"],[\"server_side:required\"]]",SEARCH_API_END_POINT,mod_id_or_name,mod_loader.clone().unwrap()),
-                    (false, true) => format!("{}?query={}&facets=[[\"project_type:mod\"],[\"versions:{}\"],[\"server_side:required\"]]",SEARCH_API_END_POINT,mod_id_or_name,version.clone().unwrap()),
-                    (false, false) => format!("{}?query={}&facets=[[\"project_type:mod\"],[\"server_side:required\"]]",SEARCH_API_END_POINT,mod_id_or_name),
+                    (true, true) => format!("{}?query={}&facets=[[\"project_type:mod\"],[\"categories:{}\"],[\"versions:{}\"]]",SEARCH_API_END_POINT,mod_id_or_name,mod_loader.clone().unwrap(),version.clone().unwrap()),
+                    (true, false) => format!("{}?query={}&facets=[[\"project_type:mod\"],[\"categories:{}\"]]",SEARCH_API_END_POINT,mod_id_or_name,mod_loader.clone().unwrap()),
+                    (false, true) => format!("{}?query={}&facets=[[\"project_type:mod\"],[\"versions:{}\"]]",SEARCH_API_END_POINT,mod_id_or_name,version.clone().unwrap()),
+                    (false, false) => format!("{}?query={}&facets=[[\"project_type:mod\"]]",SEARCH_API_END_POINT,mod_id_or_name),
                 }
             };
 
@@ -468,47 +474,83 @@ impl ModrinthEntry {
                         }
                         Err(e) => {
                             println!("Failed to parse JSON response: {}", e);
-                            if counter == 0 {
-                                counter += 1;
-                                continue;
-                            }
                             return;
                         }
                     };
 
                     if self.mod_id.is_none() {
                         // If searching by name and multiple results are found
-                        if let Some(mods) = data["hits"].as_array() {
-                            if mods.len() > 1 {
-                                println!("Multiple mods found. Please select one:");
-                                for (index, mod_entry) in mods.iter().enumerate() {
-                                    let name = mod_entry["title"].as_str().unwrap_or("Unknown Mod");
-                                    // Sets the ModrinthEntry Name to a value so we can download dependencies later
-                                    let author =
-                                        mod_entry["author"].as_str().unwrap_or("Unknown Author");
-                                    println!("{}: {} by {}", index + 1, name, author);
-                                }
-                                let mut input = String::new();
-                                std::io::stdin()
-                                    .read_line(&mut input)
-                                    .expect("Failed to read input");
-                                let choice: usize = match input.trim().parse() {
-                                    Ok(num) if num > 0 && num <= mods.len() => num,
-                                    _ => {
-                                        println!("Invalid selection.");
-                                        return;
+                        if let Some(mods) = &mut data["hits"].as_array() {
+                            let mut filtered_mods: Vec<Value> = vec![];
+                            mods.iter().for_each(|m| {
+                                if let Some(m) = m.as_object() {
+                                    if m.contains_key("server_side") {
+                                        if matches!(m["server_side"].as_str().unwrap(), "required")
+                                        {
+                                            // do not return as the mod is pushed to the filtered_mods
+                                        } else {
+                                            if matches!(
+                                                m["server_side"].as_str().unwrap(),
+                                                "optional"
+                                            ) {
+                                                loop {
+                                                    let options = vec![
+                                                        String::from("Yes"),
+                                                        String::from("No"),
+                                                    ];
+                                                    let do_download: String = Select::new(
+                                                        &format!(
+                                                            "➡️ Do you want this optional Server Side mod ? {}",
+                                                            m.get("slug")
+                                                                .unwrap()
+                                                                .as_str()
+                                                                .unwrap()
+                                                        ),
+                                                        options,
+                                                    )
+                                                    .prompt()
+                                                    .unwrap();
+                                                    if &do_download == "Yes" {
+                                                        break; // break to push mod into filtered mods
+                                                    } else {
+                                                        return;
+                                                    }
+                                                }
+                                                // do not return as the mod is pushed
+                                            } else {
+                                                return;
+                                            }
+                                        }
                                     }
-                                };
-                                if let Some(selected_mod) = mods.get(choice - 1) {
-                                    mod_id_or_name = selected_mod["project_id"]
-                                        .as_str()
-                                        .expect("Mod ID not found")
-                                        .to_string();
-
-                                    self.mod_id = Some(mod_id_or_name.clone().into());
-                                    *mod_id = Some(mod_id_or_name.clone());
-                                    continue; // Restart the loop with the selected mod ID
                                 }
+                                filtered_mods.push(m.clone());
+                            });
+                            if filtered_mods.len() > 1 {
+                                let options: Vec<String> = filtered_mods
+                                    .iter()
+                                    .map(|m| m["title"].as_str().unwrap().to_owned())
+                                    .collect();
+                                let selected_mod: String =
+                                    Select::new("➡️ Please select a mod", options)
+                                        .prompt()
+                                        .unwrap();
+                                filtered_mods
+                                    .iter()
+                                    .find(|m| {
+                                        if m["title"].as_str().unwrap().to_owned() == selected_mod {
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    })
+                                    .iter()
+                                    .for_each(|m| {
+                                        mod_id_or_name =
+                                            m["project_id"].as_str().unwrap().to_string();
+                                        self.mod_id = Some(mod_id_or_name.clone().into());
+                                        *mod_id = Some(mod_id_or_name.clone())
+                                    });
+                                continue;
                             }
                         }
                     }
@@ -551,7 +593,7 @@ impl ModrinthEntry {
                                                     let do_download_dependencies =
                                                         dependencies.unwrap();
                                                     if do_download_dependencies {
-                                                        self.verify_dependencies(
+                                                        self.verify_server_dependencies(
                                                             download_path.clone(),
                                                         )
                                                         .await;
@@ -576,10 +618,6 @@ impl ModrinthEntry {
                 }
                 Err(e) => {
                     println!("Failed to fetch mod information: {}", e);
-                    if counter == 0 {
-                        counter += 1;
-                        continue;
-                    }
                     return;
                 }
             }
@@ -599,11 +637,11 @@ impl ModrinthEntry {
                         continue;
                     }
                 }
-                if let Some(version_str) = &version {
+                if let Some(version_str) = version.clone() {
                     let game_versions = project["game_versions"].as_array().unwrap();
-                    if !game_versions
+                    if game_versions
                         .iter()
-                        .any(|v| v.as_str() == Some(version_str))
+                        .any(|v| v.as_str().unwrap() != &version_str)
                     {
                         continue;
                     }
@@ -656,6 +694,50 @@ impl ModrinthEntry {
                 None,
                 mod_loader_target,
                 None,
+                download_path.clone(),
+                Some(true),
+            ));
+            boxed_future.await;
+        }
+    }
+    async fn verify_server_dependencies(&mut self, download_path: Option<PathBuf>) {
+        // If the request fails retry it once.
+        let mut project_ids: Vec<String> = vec![];
+        if self.dependencies.is_some() {
+            let dep = self.dependencies.clone().unwrap();
+            if let Some(dependencies) = dep.as_array() {
+                for dependency in dependencies {
+                    if let Some(required) = dependency["dependency_type"].as_str() {
+                        if required == "required" {
+                            if let Some(dep_proj_id) = dependency["project_id"].as_str() {
+                                project_ids.push(dep_proj_id.to_owned());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if project_ids.is_empty() {
+            return;
+        }
+        for project_id in project_ids {
+            let mod_loader_copy = self.mod_loader.clone();
+            let mod_loader_target = if let Some(mod_loader) = mod_loader_copy {
+                Some(format!("{}", mod_loader))
+            } else {
+                None
+            };
+
+            let target_id: &mut Option<String> = &mut Some(project_id.clone());
+            // Box the future to allow recursion
+            let boxed_future = Box::pin(self.download_server_mod(
+                target_id,
+                None,
+                mod_loader_target,
+                match self.mod_version.clone() {
+                    Some(v) => Some(format!("{}", v)),
+                    None => None,
+                },
                 download_path.clone(),
                 Some(true),
             ));
