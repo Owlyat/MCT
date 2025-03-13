@@ -3,7 +3,9 @@ mod modrinth_request;
 mod papermc_request;
 use clap::{Arg, Command};
 use fabric_request::FabricMCRequest;
-use modrinth_request::{ModrinthEntry, ModrinthSortingFilter};
+use modrinth_request::{
+    ClientSide, ModLoaders, ModQuery, ModrinthEntry, ModrinthSortingFilter, ProjectType, ServerSide,
+};
 use papermc_request::PaperMCRequest;
 use reqwest::Error;
 
@@ -42,9 +44,17 @@ async fn main() -> Result<(), Error> {
                         .alias("wl")
                         .visible_alias("wl")
                         .help("Filter results by loader\nex : fabric | neoforge | quilt | forge | ...")
+                        .value_parser(clap::value_parser!(ModLoaders))
                         .required(false),
                 )
-                .arg(Arg::new("Project_Type").long("project_type").short('t').alias("pt").help("The type of project you seek for, default value : mod\nex: mod | modpack | resourcepack | ...").required(false))
+                .arg(Arg::new("Project_Type")
+                    .long("project_type")
+                    .short('t')
+                    .alias("pt")
+                    .help("The type of project you seek for, default value : mod\nex: mod | modpack | resourcepack | shader")
+                    .required(false)
+                    .value_parser(clap::value_parser!(ProjectType))
+                )
                 .arg(
                     Arg::new("Result_Number")
                         .long("result_number")
@@ -74,26 +84,30 @@ async fn main() -> Result<(), Error> {
                         .help("Sort results by relevance|downloads|follows|newest|updated")
                         .required(false),
                 )
-                .arg(
-                    Arg::new("Client_Side")
-                        .short('C').visible_short_alias('C')
-                        .long("client_side")
-                        .alias("client")
-                        .visible_alias("client")
-                        .value_parser(clap::value_parser!(bool))
-                        .help("Filters Client side mods required")
-                        .required(false),
+                .subcommand(
+                    Command::new("Sides").long_flag("sides").about("Filter by Client/Server Side arguments")
+                    .arg(
+                        Arg::new("Client_Side")
+                            .short('C').visible_short_alias('C')
+                            .long("client_side")
+                            .alias("client")
+                            .visible_alias("client")
+                            .value_parser(clap::value_parser!(ClientSide))
+                            .help("Filters Client side mods required")
+                            .required(false),
+                    )
+                    .arg(
+                        Arg::new("Server_Side")
+                            .long("server_side")
+                            .short('S').visible_short_alias('S')
+                            .alias("server")
+                            .visible_alias("server")
+                            .value_parser(clap::value_parser!(ServerSide))
+                            .help("Filters Server side mods required")
+                            .required(false),
+                    ),
+
                 )
-                .arg(
-                    Arg::new("Server_Side")
-                        .long("server_side")
-                        .short('S').visible_short_alias('S')
-                        .alias("server")
-                        .visible_alias("server")
-                        .value_parser(clap::value_parser!(bool))
-                        .help("Filters Server side mods required")
-                        .required(false),
-                ),
         )
         .subcommand(
             Command::new("Download_Entry")
@@ -215,27 +229,31 @@ async fn main() -> Result<(), Error> {
         Some(("Search", sub_commands)) => {
             let name = sub_commands.get_one::<String>("Name").unwrap();
             let version = sub_commands.get_one::<String>("Project_Version");
-            let loader = sub_commands.get_one::<String>("With_Loader");
-            let max_mods_number = sub_commands.get_one::<usize>("Result_Number");
+            let loader = sub_commands.get_one::<ModLoaders>("With_Loader");
+            let max_mod_number = sub_commands.get_one::<usize>("Result_Number");
             let offset = sub_commands.get_one::<usize>("Offset");
-            let sorting = sub_commands.get_one::<String>("Sorting");
-            let is_cliend_side = sub_commands.get_one::<bool>("Client_Side");
-            let is_server_side = sub_commands.get_one::<bool>("Server_Side");
-            let project_type = sub_commands.get_one::<String>("Project_Type");
+            let sorting = sub_commands.get_one::<ModrinthSortingFilter>("Sorting");
+            let mut client_side = None;
+            let mut server_side = None;
+            let project_type = sub_commands.get_one::<ProjectType>("Project_Type");
+            if let Some(("Sides", args)) = sub_commands.subcommand() {
+                client_side = args.get_one::<ClientSide>("Client_Side");
+                server_side = args.get_one::<ServerSide>("Server_Side");
+            }
 
             let mut modrinth_mod = ModrinthEntry::builder();
             modrinth_mod
-                .search_modrinth(
+                .search_modrinth(ModQuery::new(
                     name,
                     version,
-                    loader,
-                    max_mods_number.cloned(),
+                    loader.cloned(),
+                    max_mod_number.cloned(),
                     project_type.cloned(),
-                    ModrinthSortingFilter::with(sorting),
+                    sorting.cloned(),
                     offset.cloned(),
-                    is_cliend_side.cloned(),
-                    is_server_side.cloned(),
-                )
+                    client_side.cloned(),
+                    server_side.cloned(),
+                ))
                 .await;
 
             modrinth_mod.display_entries();
@@ -252,21 +270,18 @@ async fn main() -> Result<(), Error> {
             if for_server.is_some() {
                 let server_path = verify_path(for_server.cloned());
                 let mut fabric_server = FabricMCRequest::build(server_path);
-                match fabric_server.check_data(None) {
-                    Ok(_) => {
-                        let mut modrinth_entry = ModrinthEntry::builder();
-                        modrinth_entry
-                            .download_server_mod(
-                                &mut id.cloned(),
-                                name.cloned(),
-                                Some("fabric".to_owned()),
-                                fabric_server.get_version(),
-                                fabric_server.get_download_path(),
-                                Some(true),
-                            )
-                            .await;
-                    }
-                    Err(_) => {}
+                if fabric_server.check_data(None).is_ok() {
+                    let mut modrinth_entry = ModrinthEntry::builder();
+                    modrinth_entry
+                        .download_server_mod(
+                            &mut id.cloned(),
+                            name.cloned(),
+                            Some("fabric".to_owned()),
+                            fabric_server.get_version(),
+                            fabric_server.get_download_path(),
+                            Some(true),
+                        )
+                        .await;
                 }
             } else {
                 let mut modrinth_entry = ModrinthEntry::builder();
@@ -303,22 +318,20 @@ async fn main() -> Result<(), Error> {
                     let mut paper_server = PaperMCRequest::build();
                     match paper_server.check_data(path.clone()) {
                         Ok(_) => {
-                            match open_with_public_ip {
-                                Some(do_open) => {
-                                    if *do_open {
-                                        std::process::Command::new("cmd")
-                                            .args([
-                                                "/C",
-                                                "ssh",
-                                                "-R",
-                                                "0:localhost:25565",
-                                                "serveo.net",
-                                            ])
-                                            .spawn()
-                                            .unwrap();
-                                    }
+                            if let Some(do_open) = open_with_public_ip {
+                                if *do_open {
+                                    let _ = std::process::Command::new("cmd")
+                                        .args([
+                                            "/C",
+                                            "ssh",
+                                            "-R",
+                                            "0:localhost:25565",
+                                            "serveo.net",
+                                        ])
+                                        .spawn()
+                                        .unwrap()
+                                        .wait();
                                 }
-                                None => {}
                             }
                             paper_server.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
                         }
@@ -328,22 +341,20 @@ async fn main() -> Result<(), Error> {
                                 .await;
                             paper_server.download_build(path).await;
 
-                            match open_with_public_ip {
-                                Some(do_open) => {
-                                    if *do_open {
-                                        std::process::Command::new("cmd")
-                                            .args([
-                                                "/C",
-                                                "ssh",
-                                                "-R",
-                                                "0:localhost:25565",
-                                                "serveo.net",
-                                            ])
-                                            .spawn()
-                                            .unwrap();
-                                    }
+                            if let Some(do_open) = open_with_public_ip {
+                                if *do_open {
+                                    let _ = std::process::Command::new("cmd")
+                                        .args([
+                                            "/C",
+                                            "ssh",
+                                            "-R",
+                                            "0:localhost:25565",
+                                            "serveo.net",
+                                        ])
+                                        .spawn()
+                                        .unwrap()
+                                        .wait();
                                 }
-                                None => {}
                             }
                             paper_server.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
                         }
@@ -353,22 +364,20 @@ async fn main() -> Result<(), Error> {
                     let mut fabric_server = FabricMCRequest::build(Some(path.clone()));
                     match fabric_server.check_data(Some(path.clone())) {
                         Ok(_) => {
-                            match open_with_public_ip {
-                                Some(do_open_public) => {
-                                    if *do_open_public {
-                                        std::process::Command::new("cmd")
-                                            .args([
-                                                "/C",
-                                                "ssh",
-                                                "-R",
-                                                "0:localhost:25565",
-                                                "serveo.net",
-                                            ])
-                                            .spawn()
-                                            .unwrap();
-                                    }
+                            if let Some(do_open_public) = open_with_public_ip {
+                                if *do_open_public {
+                                    let _ = std::process::Command::new("cmd")
+                                        .args([
+                                            "/C",
+                                            "ssh",
+                                            "-R",
+                                            "0:localhost:25565",
+                                            "serveo.net",
+                                        ])
+                                        .spawn()
+                                        .unwrap()
+                                        .wait();
                                 }
-                                None => (),
                             }
                             fabric_server.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
                         }
@@ -380,22 +389,20 @@ async fn main() -> Result<(), Error> {
                             fabric_server.fetch_latest_installer_version().await;
                             fabric_server.generate_download_url();
                             fabric_server.download_build(path).await;
-                            match open_with_public_ip {
-                                Some(do_open_public) => {
-                                    if *do_open_public {
-                                        std::process::Command::new("cmd")
-                                            .args([
-                                                "/C",
-                                                "ssh",
-                                                "-R",
-                                                "0:localhost:25565",
-                                                "serveo.net",
-                                            ])
-                                            .spawn()
-                                            .unwrap();
-                                    }
+                            if let Some(do_open_public) = open_with_public_ip {
+                                if *do_open_public {
+                                    let _ = std::process::Command::new("cmd")
+                                        .args([
+                                            "/C",
+                                            "ssh",
+                                            "-R",
+                                            "0:localhost:25565",
+                                            "serveo.net",
+                                        ])
+                                        .spawn()
+                                        .unwrap()
+                                        .wait();
                                 }
-                                None => (),
                             }
                             fabric_server.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
                         }
@@ -406,22 +413,20 @@ async fn main() -> Result<(), Error> {
                     match paper_server.check_data(path.clone()) {
                         Ok(_) => {
                             println!("✅ MCA.json Found !");
-                            match open_with_public_ip {
-                                Some(do_open) => {
-                                    if *do_open {
-                                        std::process::Command::new("cmd")
-                                            .args([
-                                                "/C",
-                                                "ssh",
-                                                "-R",
-                                                "0:localhost:25565",
-                                                "serveo.net",
-                                            ])
-                                            .spawn()
-                                            .unwrap();
-                                    }
+                            if let Some(do_open) = open_with_public_ip {
+                                if *do_open {
+                                    let _ = std::process::Command::new("cmd")
+                                        .args([
+                                            "/C",
+                                            "ssh",
+                                            "-R",
+                                            "0:localhost:25565",
+                                            "serveo.net",
+                                        ])
+                                        .spawn()
+                                        .unwrap()
+                                        .wait();
                                 }
-                                None => {}
                             }
                             paper_server.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
                         }
@@ -432,22 +437,20 @@ async fn main() -> Result<(), Error> {
                                 .await;
                             paper_server.download_build(path).await;
 
-                            match open_with_public_ip {
-                                Some(do_open) => {
-                                    if *do_open {
-                                        std::process::Command::new("cmd")
-                                            .args([
-                                                "/C",
-                                                "ssh",
-                                                "-R",
-                                                "0:localhost:25565",
-                                                "serveo.net",
-                                            ])
-                                            .spawn()
-                                            .unwrap();
-                                    }
+                            if let Some(do_open) = open_with_public_ip {
+                                if *do_open {
+                                    let _ = std::process::Command::new("cmd")
+                                        .args([
+                                            "/C",
+                                            "ssh",
+                                            "-R",
+                                            "0:localhost:25565",
+                                            "serveo.net",
+                                        ])
+                                        .spawn()
+                                        .unwrap()
+                                        .wait();
                                 }
-                                None => {}
                             }
                             paper_server.start_server(xmx.cloned(), xms.cloned(), is_gui.cloned());
                         }

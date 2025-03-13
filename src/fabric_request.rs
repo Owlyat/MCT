@@ -2,7 +2,7 @@ use inquire::Select;
 use reqwest::Error;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -254,14 +254,15 @@ impl FabricMCRequest {
         fs::write(&path, startup_script).unwrap();
 
         println!("🚀 Starting Fabric Server...");
-        std::process::Command::new("java")
+        let _ = std::process::Command::new("java")
             .args(&java_args)
             .current_dir(self.server_path.as_ref().unwrap())
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
-            .expect("❌ Failed to start server.");
+            .expect("❌ Failed to start server.")
+            .wait();
     }
 }
 
@@ -286,14 +287,12 @@ impl FabricMCRequest {
 
 impl FabricMCRequest {
     pub fn check_data(&mut self, path: Option<PathBuf>) -> Result<(), ()> {
-        let path = if path.is_some() {
-            path.unwrap()
+        let path = if let Some(path) = path {
+            path
+        } else if self.server_path.is_some() {
+            self.server_path.clone().unwrap()
         } else {
-            if self.server_path.is_some() {
-                self.server_path.clone().unwrap()
-            } else {
-                panic!("No Server Path Directory found !")
-            }
+            panic!("No Server Path Directory found !")
         };
         let potential_data = path.join("MCA.json");
         match &mut fs::File::open(potential_data) {

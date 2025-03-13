@@ -10,6 +10,24 @@ const MOD_LOADERS: &[&str; 7] = &[
     "rift",
 ];
 const FILTERS: &[&str; 5] = &["relevance", "downloads", "follows", "newest", "updated"];
+use std::path::PathBuf;
+
+use serde::Serialize;
+use serde_json::json;
+
+use serde_json::Value;
+
+#[derive(Serialize, Debug, Clone)]
+#[derive(Default)]
+pub struct ModrinthEntry {
+    mod_name: Option<Box<str>>,
+    mod_id: Option<Box<str>>,
+    mod_version: Option<Box<str>>,
+    mod_loader: Option<String>,
+    response: Option<Value>,
+    dependencies: Option<Value>,
+}
+#[derive(Clone)]
 pub enum ModrinthSortingFilter {
     Relevance,
     Downloads,
@@ -46,21 +64,116 @@ impl ModrinthSortingFilter {
     }
 }
 
-use std::path::PathBuf;
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum ModLoaders {
+    Fabric,
+    Forge,
+    Quilt,
+    NeoForge,
+    LiteLoader,
+    ModLoader,
+    Rift,
+}
+impl ModLoaders {
+    fn get_loader(&self) -> &'static str {
+        match self {
+            ModLoaders::Fabric => "fabric",
+            ModLoaders::Forge => "forge",
+            ModLoaders::Quilt => "quilt",
+            ModLoaders::NeoForge => "neoforge",
+            ModLoaders::LiteLoader => "liteloader",
+            ModLoaders::ModLoader => "modloader",
+            ModLoaders::Rift => "rift",
+        }
+    }
+}
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum ProjectType {
+    Mod,
+    ModPack,
+    ResourcePack,
+    Shader,
+}
+impl ProjectType {
+    fn get_str(&self) -> &'static str {
+        match self {
+            ProjectType::Mod => "mod",
+            ProjectType::ModPack => "modpack",
+            ProjectType::ResourcePack => "resourcepack",
+            ProjectType::Shader => "shader",
+        }
+    }
+}
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum ClientSide {
+    Required,
+    Optional,
+    Unsupported,
+    Unknown,
+}
+impl ClientSide {
+    fn get_str(&self) -> &'static str {
+        match self {
+            ClientSide::Required => "required",
+            ClientSide::Optional => "optional",
+            ClientSide::Unsupported => "unsupported",
+            ClientSide::Unknown => "unknown",
+        }
+    } 
+}
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum ServerSide {
+    Required,
+    Optional,
+    Unsupported,
+    Unknown,
+}
+impl ServerSide {
+    fn get_str(&self) -> &'static str {
+        match self {
+            ServerSide::Required => "required",
+            ServerSide::Optional => "optional",
+            ServerSide::Unsupported => "unsupported",
+            ServerSide::Unknown => "unknown",
+        }
+    } 
+}
 
-use serde::Serialize;
-use serde_json::json;
+pub struct ModQuery {
+    mod_name : String,
+    mod_version : Option<String>,
+    mod_loader: Option<ModLoaders>,
+    max_mod_number : Option<usize>,
+    project_type : Option<ProjectType>,
+    sorting : Option<ModrinthSortingFilter>,
+    offset : Option<usize>,
+    client_side : Option<ClientSide>,
+    server_side : Option<ServerSide>,
+}
 
-use serde_json::Value;
-
-#[derive(Serialize, Debug, Clone)]
-pub struct ModrinthEntry {
-    mod_name: Option<Box<str>>,
-    mod_id: Option<Box<str>>,
-    mod_version: Option<Box<str>>,
-    mod_loader: Option<String>,
-    response: Option<Value>,
-    dependencies: Option<Value>,
+impl ModQuery {
+    pub fn new(
+        mod_name : impl Into<String>,
+        mod_version : Option<impl Into<String>>,
+        mod_loader : Option<ModLoaders>,
+        max_mod_number : Option<usize>,
+        project_type : Option<ProjectType>,
+        sorting : Option<ModrinthSortingFilter>,
+        offset : Option<usize>,
+        client_side : Option<ClientSide>,
+        server_side : Option<ServerSide>,
+    ) -> Self {
+        Self { mod_name: mod_name.into(),
+            mod_version: mod_version.and_then(|version| {Some(version.into())}),
+            mod_loader,
+            max_mod_number,
+            project_type,
+            sorting,
+            offset,
+            client_side,
+            server_side,
+        }
+    }
 }
 
 impl ModrinthEntry {
@@ -70,97 +183,41 @@ impl ModrinthEntry {
         }
     }
 
+   
     /// Use this if you want to search a modrinth mod
     pub async fn search_modrinth(
         &mut self,
-        mod_name: impl Into<String>,
-        mod_version: Option<impl Into<String>>,
-        mod_loader: Option<impl Into<String>>,
-        max_mod_number: Option<usize>,
-        project_type: Option<String>,
-        sorting: Option<ModrinthSortingFilter>,
-        offset: Option<usize>,
-        is_client_side: Option<bool>,
-        is_server_side: Option<bool>,
+        mod_query : ModQuery,
     ) -> &mut Self {
         // this is just to call the function with Some("word")
-        let target_mod_name: String = mod_name.into();
+        let target_mod_name: String = mod_query.mod_name.clone();
 
         // Creating the request with the mod name or mod id and if defined mod version, mod loader
         let query = format!("?query={}", target_mod_name);
 
         let mut facets: Vec<Value> = Vec::new();
-        match project_type {
-            Some(proj_type) => {
-                facets.push(json!([format!("project_type:{}", proj_type)]));
-            }
-            None => {
-                facets.push(json!([String::from("project_type:mod")]));
-            }
+
+        facets.push(json!([format!("project_type:{}",mod_query.project_type.map_or_else(|| {"mod"}, |project_type| {project_type.get_str()}))]));
+
+        if let Some(mod_version) = mod_query.mod_version {
+            facets.push(json!([format!("versions:{}",mod_version)]));
+        }
+        if let Some(mod_loader) = mod_query.mod_loader {
+            facets.push(json!([format!("categories:{}",mod_loader.get_loader())]));
         }
 
-        // if any is empty, we don't push it to facets
-        if mod_version.is_some() {
-            facets.push(json!([format!("versions:{}", mod_version.unwrap().into())]));
+        let limit = format!("&limit={}",mod_query.max_mod_number.unwrap_or(10));
+
+        let sorting = format!("&index={}",if let Some(sorting)=mod_query.sorting {sorting.get_filter()} else {FILTERS[0]});
+
+        let offset = format!("&offset={}",mod_query.offset.unwrap_or(0));
+
+        if let Some(client_side) = mod_query.client_side {
+            facets.push(json!([format!("client_side:{}",client_side.get_str())]));
         }
-        if mod_loader.is_some() {
-            let mod_loader: String = mod_loader.unwrap().into();
-            MOD_LOADERS.iter().for_each(|loader| {
-                if &mod_loader == loader {
-                    facets.push(json!([format!("categories:{}", loader)]));
-                }
-            });
+        if let Some(server_side) = mod_query.server_side {
+            facets.push(json!([format!("server_side:{}",server_side.get_str())]));
         }
-        // setup the max number of mod to get
-        let limit = format!(
-            "&limit={}",
-            if max_mod_number.is_some() {
-                max_mod_number.unwrap()
-            } else {
-                10
-            }
-        );
-
-        // setup the sorting filter
-        let sorting = format!(
-            "&index={}",
-            if sorting.is_some() {
-                sorting.unwrap().get_filter()
-            } else {
-                FILTERS[0]
-            }
-        );
-
-        // Setup the offset number of mods displayed
-        let offset = format!(
-            "&offset={}",
-            if offset.is_some() { offset.unwrap() } else { 0 }
-        );
-
-        // Filter client side mod required
-        if is_client_side.is_some() {
-            facets.push(json!([format!(
-                "client_side:{}",
-                if is_client_side.unwrap() {
-                    "required"
-                } else {
-                    "optional"
-                }
-            )]));
-        }
-
-        // Filter server side mod required
-        if is_server_side.is_some() {
-            facets.push(json!([format!(
-                "server_side:{}",
-                if is_client_side.unwrap() {
-                    "required"
-                } else {
-                    "optional"
-                }
-            )]));
-        }
-
         // Building the URL to the API END POINT
         let url = {
             format!(
@@ -179,38 +236,21 @@ impl ModrinthEntry {
         let response = reqwest::get(&url).await;
 
         // we keep track of the json answer in self
-        match response {
-            Ok(response) => {
-                if let Ok(value) = response.json::<Value>().await {
-                    self.response = Some(value)
-                }
-            }
-            Err(e) => {
-                println!("{}", e)
+        if let Ok(response) = response {
+            if let Ok(value) = response.json::<Value>().await {
+                self.response = Some(value);
             }
         }
         self
     }
 }
 
-impl Default for ModrinthEntry {
-    fn default() -> Self {
-        Self {
-            mod_name: None,
-            mod_id: None,
-            mod_version: None,
-            mod_loader: None,
-            response: None,
-            dependencies: None,
-        }
-    }
-}
 
 impl ModrinthEntry {
     pub fn display_entries(&self) {
         if let Some(response) = &self.response {
             if let Some(mods) = response.get("hits").and_then(|hits| hits.as_array()) {
-                println!("Found {} mods:", mods.len());
+                println!("Found {} entries:", mods.len());
                 for (index, mod_entry) in mods.iter().enumerate() {
                     let name = mod_entry
                         .get("title")
@@ -488,38 +528,34 @@ impl ModrinthEntry {
                                         if matches!(m["server_side"].as_str().unwrap(), "required")
                                         {
                                             // do not return as the mod is pushed to the filtered_mods
-                                        } else {
-                                            if matches!(
-                                                m["server_side"].as_str().unwrap(),
-                                                "optional"
-                                            ) {
-                                                loop {
-                                                    let options = vec![
-                                                        String::from("Yes"),
-                                                        String::from("No"),
-                                                    ];
-                                                    let do_download: String = Select::new(
-                                                        &format!(
-                                                            "➡️ Do you want this optional Server Side mod ? {}",
-                                                            m.get("slug")
-                                                                .unwrap()
-                                                                .as_str()
-                                                                .unwrap()
-                                                        ),
-                                                        options,
-                                                    )
-                                                    .prompt()
-                                                    .unwrap();
-                                                    if &do_download == "Yes" {
-                                                        break; // break to push mod into filtered mods
-                                                    } else {
-                                                        return;
-                                                    }
+                                        } else if matches!(
+                                            m["server_side"].as_str().unwrap(),
+                                            "optional"
+                                        ) {
+                                            
+                                                let options = vec![
+                                                    String::from("Yes"),
+                                                    String::from("No"),
+                                                ];
+                                                let do_download: String = Select::new(
+                                                    &format!(
+                                                        "➡️ Do you want this optional Server Side mod ? {}",
+                                                        m.get("slug")
+                                                            .unwrap()
+                                                            .as_str()
+                                                            .unwrap()
+                                                    ),
+                                                    options,
+                                                )
+                                                .prompt()
+                                                .unwrap();
+                                                if &do_download == "Yes" {
+                                                } else {
+                                                    return;
                                                 }
-                                                // do not return as the mod is pushed
-                                            } else {
-                                                return;
-                                            }
+                                            // do not return as the mod is pushed
+                                        } else {
+                                            return;
                                         }
                                     }
                                 }
@@ -537,11 +573,7 @@ impl ModrinthEntry {
                                 filtered_mods
                                     .iter()
                                     .find(|m| {
-                                        if m["title"].as_str().unwrap().to_owned() == selected_mod {
-                                            true
-                                        } else {
-                                            false
-                                        }
+                                        *m["title"].as_str().unwrap() == selected_mod
                                     })
                                     .iter()
                                     .for_each(|m| {
